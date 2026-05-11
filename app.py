@@ -1,10 +1,10 @@
 """
 ASM Document Extractor
 Parsers  : OCR (layout-aware) | Fast (no OCR)
-Backends : A — Regex | B — Ollama LLM
+Backends : Regex | Ollama LLM
 """
 from __future__ import annotations
-import json, copy, tempfile, time
+import json, copy, tempfile, time, re, io
 from pathlib import Path
 
 import streamlit as st
@@ -16,40 +16,112 @@ from extractor import (
     DEFAULT_SCHEMA,
 )
 
-POOL_DIR = Path(__file__).parent
+POOL_DIR  = Path(__file__).parent
 SUPPORTED = {".pdf", ".docx"}
 
+# ── LLM config (from Streamlit secrets or local fallback) ─────────────────────
+_s = st.secrets if hasattr(st, "secrets") else {}
+LLM_BASE_URL: str = _s.get("LLM_BASE_URL", "http://localhost:11434/v1")
+API_KEY:      str = _s.get("API_KEY",      "")
+MODEL_NAME:   str = _s.get("MODEL_NAME",   "gemma4:31b-cloud")
 
-# ── Page setup ────────────────────────────────────────────────────────────────
-
-# Read from Streamlit secrets when deployed; fall back to local Ollama for dev.
-_secrets = st.secrets if hasattr(st, "secrets") else {}
-LLM_BASE_URL: str = _secrets.get("LLM_BASE_URL", "http://localhost:11434/v1")
-API_KEY:      str = _secrets.get("API_KEY",      "")
-MODEL_NAME:   str = _secrets.get("MODEL_NAME",   "gemma4:31b-cloud")
-
+# ── Page ──────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="ASM Extractor", layout="wide")
 st.markdown("""
 <style>
-.block-container { padding-top: 1.5rem; }
-.stTabs [data-baseweb="tab"] { font-size: 0.95rem; }
+.block-container  { padding-top: 1.2rem; }
+.stTabs [data-baseweb="tab"] { font-size: 0.9rem; }
+div[data-testid="stFileUploaderDropzone"] { padding: 0.6rem; }
 </style>
 """, unsafe_allow_html=True)
 
-
 # ── Session state ─────────────────────────────────────────────────────────────
+_defaults = {
+    "schema":         None,          # replaced below
+    "upload_pool":    {},             # {name: bytes}
+    "results_cache":  {},             # {name: {result, elapsed} | {error}}
+    "explore_result": None,
+    "explore_parsed": None,
+    "single_result":  None,
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = copy.deepcopy(DEFAULT_SCHEMA) if k == "schema" else v
 
-if "schema" not in st.session_state:
-    st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
-if "results_cache" not in st.session_state:
-    st.session_state.results_cache = {}
-if "explore_result" not in st.session_state:
-    st.session_state.explore_result = None
-if "explore_parsed" not in st.session_state:
-    st.session_state.explore_parsed = None
+
+# ── File helpers ──────────────────────────────────────────────────────────────
+
+def _disk_files() -> list[Path]:
+    return sorted(
+        [f for f in POOL_DIR.iterdir()
+         if f.suffix.lower() in SUPPORTED and f.stem not in ("app", "extractor")],
+        key=lambda f: f.name,
+    )
+
+def _all_names() -> list[str]:
+    disk = [f.name for f in _disk_files()]
+    up   = list(st.session_state.upload_pool.keys())
+    return up + [n for n in disk if n not in up]
+
+def _bytes(name: str) -> bytes | None:
+    if name in st.session_state.upload_pool:
+        return st.session_state.upload_pool[name]
+    p = POOL_DIR / name
+    return p.read_bytes() if p.exists() else None
+
+def _make_temp(name: str) -> Path | None:
+    data = _bytes(name)
+    if not data:
+        return None
+    tmp = tempfile.NamedTemporaryFile(suffix=Path(name).suffix.lower(), delete=False)
+    tmp.write(data); tmp.close()
+    return Path(tmp.name)
+
+def _size_kb(name: str) -> int:
+    if name in st.session_state.upload_pool:
+        return len(st.session_state.upload_pool[name]) // 1024
+    p = POOL_DIR / name
+    return p.stat().st_size // 1024 if p.exists() else 0
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Display helpers ───────────────────────────────────────────────────────────
+
+def _dedup(headers: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    out = []
+    for h in headers:
+        h = str(h).strip() or "col"
+        seen[h] = seen.get(h, 0) + 1
+        out.append(h if seen[h] == 1 else f"{h}_{seen[h]}")
+    return out
+
+def _cell(val: object, max_len: int = 120) -> str:
+    s = re.sub(r"\s*\n\s*", " · ", str(val or "").strip())
+    s = re.sub(r"  +", " ", s)
+    return s[:max_len] + "…" if len(s) > max_len else s
+
+def _render_tbl(rows: list[list]) -> None:
+    import pandas as pd
+    if not rows:
+        st.caption("(empty)"); return
+    hdr = [str(c or "").strip() for c in rows[0]]
+    data = rows[1:]
+    if hdr.count("") / max(len(hdr), 1) > 0.5:
+        hdr, data = [f"col_{i}" for i in range(len(hdr))], rows
+    hdr = _dedup(hdr)
+    cleaned = []
+    for r in data:
+        row = [_cell(c) for c in r]
+        while len(row) < len(hdr): row.append("")
+        cleaned.append(row[:len(hdr)])
+    if not cleaned:
+        st.caption("(no data rows)"); return
+    df = pd.DataFrame(cleaned, columns=hdr)
+    df = df.loc[:, (df != "").any(axis=0)]
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ── Sidebar — Settings + Schema ───────────────────────────────────────────────
 
 with st.sidebar:
     st.title("Settings")
@@ -57,7 +129,7 @@ with st.sidebar:
     parser_choice = st.selectbox(
         "Parser",
         ["OCR — reads embedded images (recommended)", "Fast — no OCR"],
-        help="OCR detects layout and reads text inside images. Slower but more accurate.",
+        help="OCR uses layout detection + image OCR. Slower but catches scanned content.",
     )
     parser_key = "pymupdf4llm" if parser_choice.startswith("OCR") else "pymupdf"
 
@@ -68,435 +140,428 @@ with st.sidebar:
     use_llm = backend_choice.startswith("Ollama")
 
     st.divider()
-
-    # ── Schema editor ──────────────────────────────────────────────────────────
     st.subheader("Target Schema")
 
     schema = st.session_state.schema
-    scalar_fields = [f for f in schema if f["field_type"] == "scalar"]
-    table_fields  = [f for f in schema if f["field_type"] == "table"]
 
+    # ── Scalar fields ──────────────────────────────────────────────────────────
     with st.expander("Scalar fields", expanded=True):
-        for f in scalar_fields:
+        for f in [f for f in schema if f["field_type"] == "scalar"]:
             idx = schema.index(f)
-            col_cb, col_name = st.columns([1, 5])
-            schema[idx]["enabled"] = col_cb.checkbox(
+            c1, c2 = st.columns([1, 5])
+            schema[idx]["enabled"] = c1.checkbox(
                 f["name"], value=f["enabled"], key=f"sf_{f['name']}",
                 label_visibility="collapsed",
             )
-            col_name.caption(f"**{f['name']}** — {f['description'][:50]}")
+            c2.caption(f"**{f['name']}** — {f['description'][:48]}")
 
         with st.form("add_scalar", clear_on_submit=True):
-            sname = st.text_input("Field name", placeholder="e.g. po_number")
-            sdesc = st.text_input("Description", placeholder="Purchase order number")
-            if st.form_submit_button("Add scalar field") and sname.strip():
+            c1, c2 = st.columns(2)
+            sname = c1.text_input("Name", placeholder="po_number")
+            sdesc = c2.text_input("Description", placeholder="Purchase order #")
+            if st.form_submit_button("+ Add field", use_container_width=True) and sname.strip():
                 schema.append({
                     "name": sname.strip().lower().replace(" ", "_"),
                     "description": sdesc.strip() or sname.strip(),
-                    "field_type": "scalar",
-                    "enabled": True,
+                    "field_type": "scalar", "enabled": True,
                 })
                 st.rerun()
 
+    # ── Table fields ───────────────────────────────────────────────────────────
     with st.expander("Table fields", expanded=True):
-        for f in table_fields:
+        for f in [f for f in schema if f["field_type"] == "table"]:
             idx = schema.index(f)
-            col_cb, col_name = st.columns([1, 5])
-            schema[idx]["enabled"] = col_cb.checkbox(
+            c1, c2 = st.columns([1, 5])
+            schema[idx]["enabled"] = c1.checkbox(
                 f["name"], value=f["enabled"], key=f"tf_{f['name']}",
                 label_visibility="collapsed",
             )
-            col_name.caption(f"**{f['name']}** — {f['description'][:40]}")
+            c2.caption(f"**{f['name']}** — {f['description'][:38]}")
 
-            if f["enabled"]:
-                cur_mode = f.get("columns_mode", "defined")
-                mode_label = st.radio(
-                    "Columns",
-                    ["Defined", "Auto-detect (LLM infers columns + marks)"],
-                    index=0 if cur_mode == "defined" else 1,
-                    key=f"cmode_{f['name']}",
-                    horizontal=True,
-                )
-                schema[idx]["columns_mode"] = "defined" if mode_label == "Defined" else "auto"
+            if not f["enabled"]:
+                continue
 
-                if schema[idx]["columns_mode"] == "defined":
-                    with st.expander(f"Columns of {f['name']}", expanded=False):
-                        for ci, col in enumerate(f.get("columns", [])):
-                            schema[idx]["columns"][ci]["enabled"] = st.checkbox(
-                                f"{col['name']} — {col['description'][:40]}",
-                                value=col["enabled"],
-                                key=f"col_{f['name']}_{col['name']}",
-                            )
-                else:
-                    st.caption("LLM will detect all columns including checkbox/mark columns.")
-
-        with st.form("add_table", clear_on_submit=True):
-            tname = st.text_input("Table field name", placeholder="e.g. line_items")
-            tdesc = st.text_input("Description", placeholder="Order line items")
-            tauto = st.checkbox(
-                "Auto-detect columns (LLM infers columns + marks)",
-                value=False,
-                help="Recommended when column layout is unknown or includes checkboxes.",
+            # Auto / Defined toggle
+            cur_mode = f.get("columns_mode", "defined")
+            new_mode = st.segmented_control(
+                "Columns",
+                ["Auto-detect", "Defined"],
+                default="Auto-detect" if cur_mode == "auto" else "Defined",
+                key=f"cmode_{f['name']}",
             )
-            tcols = st.text_area(
-                "Columns (one per line: name — description) — ignored if auto-detect",
-                placeholder="item_number — Item number\nquantity — Quantity ordered",
-            )
-            if st.form_submit_button("Add table field") and tname.strip():
-                cols = []
-                if not tauto:
-                    for line in tcols.strip().splitlines():
-                        parts = line.split("—", 1)
-                        cols.append({
-                            "name": parts[0].strip().lower().replace(" ", "_"),
-                            "description": parts[1].strip() if len(parts) > 1 else parts[0].strip(),
+            schema[idx]["columns_mode"] = "auto" if new_mode == "Auto-detect" else "defined"
+
+            if schema[idx]["columns_mode"] == "auto":
+                st.caption("LLM detects all columns including checkboxes / marks.")
+            else:
+                # Existing columns: toggle + remove
+                cols_list = schema[idx].get("columns", [])
+                for ci, col in enumerate(cols_list):
+                    cc1, cc2, cc3 = st.columns([1, 5, 1])
+                    schema[idx]["columns"][ci]["enabled"] = cc1.checkbox(
+                        col["name"], value=col["enabled"],
+                        key=f"col_{f['name']}_{col['name']}",
+                        label_visibility="collapsed",
+                    )
+                    cc2.caption(f"`{col['name']}` — {col['description'][:32]}")
+                    if cc3.button("✕", key=f"rm_col_{f['name']}_{ci}", help="Remove column"):
+                        schema[idx]["columns"].pop(ci)
+                        st.rerun()
+
+                # Add column inline (outside form to allow remove buttons above)
+                with st.form(f"add_col_{f['name']}", clear_on_submit=True):
+                    ac1, ac2 = st.columns(2)
+                    cname = ac1.text_input("Column name", placeholder="item_number", key=f"cn_{f['name']}")
+                    cdesc = ac2.text_input("Description",  placeholder="Item #",      key=f"cd_{f['name']}")
+                    if st.form_submit_button("+ Add column", use_container_width=True) and cname.strip():
+                        schema[idx]["columns"].append({
+                            "name": cname.strip().lower().replace(" ", "_"),
+                            "description": cdesc.strip() or cname.strip(),
                             "enabled": True,
                         })
+                        st.rerun()
+
+            st.divider()
+
+        # Add new table field
+        with st.form("add_table", clear_on_submit=True):
+            tname = st.text_input("Table name", placeholder="line_items")
+            tdesc = st.text_input("Description", placeholder="Order line items")
+            tauto = st.toggle("Auto-detect columns", value=True,
+                              help="LLM detects columns + marks. Disable to define columns manually.")
+            if st.form_submit_button("+ Add table field", use_container_width=True) and tname.strip():
                 schema.append({
                     "name": tname.strip().lower().replace(" ", "_"),
                     "description": tdesc.strip() or tname.strip(),
-                    "field_type": "table",
-                    "enabled": True,
+                    "field_type": "table", "enabled": True,
                     "columns_mode": "auto" if tauto else "defined",
-                    "columns": cols,
+                    "columns": [],
                 })
                 st.rerun()
 
-    col_reset, col_infer = st.columns(2)
-    if col_reset.button("Reset schema", use_container_width=True):
+    # Reset / Infer
+    c1, c2 = st.columns(2)
+    if c1.button("Reset schema", use_container_width=True):
         st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
         st.rerun()
-
-    if col_infer.button("Infer schema", use_container_width=True,
-                        help="Parse a document and let the LLM suggest a schema"):
+    if c2.button("Infer schema", use_container_width=True,
+                 help="Let the LLM suggest a schema from a sample document"):
         st.session_state._infer_pending = True
 
     if st.session_state.get("_infer_pending"):
-        pool_files = sorted(
-            [f for f in POOL_DIR.iterdir() if f.suffix.lower() in SUPPORTED
-             and f.stem not in ("app", "extractor")],
-            key=lambda f: f.name,
-        )
-        if pool_files:
-            pick = st.selectbox("Pick sample doc for inference", [f.name for f in pool_files],
-                                key="infer_pick")
-            if st.button("Run inference", key="run_infer"):
-                with st.spinner("Parsing + inferring schema…"):
-                    parsed = parse_document(
-                        POOL_DIR / pick, parser=parser_key,
-                        llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME,
-                    )
-                    suggested = infer_schema(parsed, LLM_BASE_URL, API_KEY, MODEL_NAME)
-                if suggested:
-                    st.session_state.schema = suggested
-                    st.session_state._infer_pending = False
-                    st.rerun()
+        names_now = _all_names()
+        if names_now:
+            pick = st.selectbox("Sample document", names_now, key="infer_pick")
+            if st.button("Run", key="run_infer", use_container_width=True):
+                tmp = _make_temp(pick)
+                if tmp:
+                    with st.spinner("Inferring schema…"):
+                        parsed = parse_document(tmp, parser=parser_key,
+                                                llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+                        suggested = infer_schema(parsed, LLM_BASE_URL, API_KEY, MODEL_NAME)
+                    if suggested:
+                        st.session_state.schema = suggested
+                        st.session_state._infer_pending = False
+                        st.rerun()
+        else:
+            st.caption("Upload a file first.")
+            st.session_state._infer_pending = False
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Extraction helpers ────────────────────────────────────────────────────────
 
-def get_pool_files() -> list[Path]:
-    return sorted(
-        [f for f in POOL_DIR.iterdir()
-         if f.suffix.lower() in SUPPORTED and f.stem not in ("app", "extractor")],
-        key=lambda f: f.name,
-    )
-
-
-def run_extraction(path: Path) -> tuple[dict, float]:
-    parsed = parse_document(path, parser=parser_key,
+def _run_extraction(name: str) -> tuple[dict, float]:
+    tmp = _make_temp(name)
+    if not tmp:
+        raise FileNotFoundError(name)
+    parsed = parse_document(tmp, parser=parser_key,
                             llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
     if use_llm:
         result, elapsed = extract_schema_ollama(
-            parsed, st.session_state.schema, LLM_BASE_URL, API_KEY, MODEL_NAME,
-        )
+            parsed, st.session_state.schema, LLM_BASE_URL, API_KEY, MODEL_NAME)
     else:
         result, elapsed = extract_schema_regex(parsed, st.session_state.schema)
     return attach_citations(result, parsed["elements"]), elapsed
 
+def _flatten_scalar(result: dict) -> dict:
+    scalar_names = {f["name"] for f in st.session_state.schema
+                    if f["field_type"] == "scalar" and f["enabled"]}
+    return {k: (v.get("value", "") if isinstance(v, dict) else v)
+            for k, v in result.items() if k in scalar_names}
 
-def show_result(result: dict, elapsed: float, fname: str):
-    backend_label = f"Ollama ({MODEL_NAME})" if use_llm else "Regex"
-    st.success(f"{fname} — {parser_key} + {backend_label} — {elapsed:.1f}s")
+def _show_result(result: dict, elapsed: float, fname: str) -> None:
+    backend = f"Ollama ({MODEL_NAME})" if use_llm else "Regex"
+    st.success(f"**{fname}** — {parser_key} + {backend} — {elapsed:.1f}s")
 
     schema = st.session_state.schema
     scalar_names = {f["name"] for f in schema if f["field_type"] == "scalar" and f["enabled"]}
     table_names  = {f["name"] for f in schema if f["field_type"] == "table"  and f["enabled"]}
 
-    # Scalar cards
-    scalar_items = {k: v for k, v in result.items() if k in scalar_names}
-    if scalar_items:
+    scalars = {k: v for k, v in result.items() if k in scalar_names}
+    if scalars:
         cols = st.columns(3)
-        for ci, (field, wrapped) in enumerate(scalar_items.items()):
+        for ci, (field, wrapped) in enumerate(scalars.items()):
             val  = wrapped.get("value", "") if isinstance(wrapped, dict) else wrapped
-            cite = wrapped.get("citation") if isinstance(wrapped, dict) else None
+            cite = wrapped.get("citation")  if isinstance(wrapped, dict) else None
             with cols[ci % 3]:
                 st.markdown(f"**{field}**")
                 st.code(val or "—", language=None)
                 if cite:
-                    pg   = cite.get("page")
-                    src  = cite.get("source_text", "")[:40]
+                    pg  = cite.get("page")
+                    src = cite.get("source_text", "")[:40]
                     st.caption(f"p.{pg} · {src!r}" if pg else src)
 
-    # Table fields
     for field in table_names:
-        if field not in result:
-            continue
-        rows_raw = result[field]
-        if not rows_raw:
-            st.info(f"No rows found for **{field}**")
-            continue
-        import pandas as pd
-        rows = [
-            {k: (v.get("value", "") if isinstance(v, dict) else v)
-             for k, v in row.items()}
-            for row in rows_raw
-        ]
+        rows_raw = result.get(field, [])
         st.markdown(f"**{field}**")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        if not rows_raw:
+            st.caption("No rows found."); continue
+        import pandas as pd
+        rows = [{k: _cell(v.get("value", "") if isinstance(v, dict) else v)
+                 for k, v in row.items()} for row in rows_raw]
+        df = pd.DataFrame(rows)
+        df.columns = _dedup(list(df.columns))
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Download + raw JSON
-    col_dl, col_raw = st.columns([1, 4])
-    with col_dl:
-        st.download_button(
-            "Download JSON",
-            data=json.dumps(result, indent=2, default=str),
-            file_name=f"{Path(fname).stem}_extracted.json",
-            mime="application/json",
-            key=f"dl_{fname}_{time.time()}",
-        )
-    with col_raw:
-        with st.expander("Raw JSON"):
-            st.json(result, expanded=1)
-
-
-def flatten_scalar(result: dict) -> dict:
-    row = {}
-    schema = st.session_state.schema
-    scalar_names = {f["name"] for f in schema if f["field_type"] == "scalar" and f["enabled"]}
-    for k, v in result.items():
-        if k not in scalar_names:
-            continue
-        row[k] = v.get("value", "") if isinstance(v, dict) else v
-    return row
+    c1, c2 = st.columns([1, 4])
+    c1.download_button(
+        "Download JSON",
+        data=json.dumps(result, indent=2, default=str),
+        file_name=f"{Path(fname).stem}_extracted.json",
+        mime="application/json",
+        key=f"dl_{fname}_{time.time()}",
+    )
+    with c2.expander("Raw JSON"):
+        st.json(result, expanded=1)
 
 
-# ── Main tabs ─────────────────────────────────────────────────────────────────
+# ── Main area ─────────────────────────────────────────────────────────────────
 
 st.title("ASM Document Extractor")
-tab_schema, tab_explore = st.tabs(["Schema Extract", "Full Explore"])
+tab_extract, tab_explore = st.tabs(["Extract", "Explore"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Schema Extract
+# TAB 1 — Extract
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with tab_schema:
-    mode_col, _ = st.columns([2, 3])
-    with mode_col:
-        source_mode = st.radio("Source", ["Pool (batch)", "Single document"], horizontal=True)
-    st.divider()
+with tab_extract:
 
-    # ── Pool mode ──────────────────────────────────────────────────────────────
-    if source_mode.startswith("Pool"):
-        pool_files = get_pool_files()
+    # ── Workspace ──────────────────────────────────────────────────────────────
+    with st.container(border=True):
+        up_col, info_col = st.columns([3, 1])
+        with up_col:
+            new_uploads = st.file_uploader(
+                "Drop files here",
+                type=["pdf", "docx"],
+                accept_multiple_files=True,
+                label_visibility="collapsed",
+            )
+        with info_col:
+            st.caption("PDF or DOCX  \nFiles stay for this session.")
 
-        if not pool_files:
-            st.info("No PDF/DOCX files found in the pool folder.")
-        else:
-            st.markdown(f"**{len(pool_files)} document(s) in pool**")
-            selected: list[Path] = []
-            c0, c1, c2 = st.columns([5, 1, 1])
-            c0.markdown("**File**")
-            c1.markdown("**Size**")
-            c2.markdown("**Select**")
-            for fpath in pool_files:
-                ca, cb, cc = st.columns([5, 1, 1])
-                status = "[done]" if fpath.name in st.session_state.results_cache else ""
-                ca.write(f"{status} {fpath.name}")
-                cb.caption(f"{fpath.stat().st_size // 1024} KB")
-                if cc.checkbox("sel", key=f"sel_{fpath.name}", label_visibility="collapsed"):
-                    selected.append(fpath)
-
-            btn1, btn2, btn3 = st.columns([2, 2, 4])
-            run_selected = btn1.button("Extract selected", disabled=not selected)
-            run_all      = btn2.button("Extract all")
-            if btn3.button("Clear results"):
-                st.session_state.results_cache = {}
+        if new_uploads:
+            added = sum(
+                1 for uf in new_uploads
+                if uf.name not in st.session_state.upload_pool
+                and not st.session_state.upload_pool.update({uf.name: uf.read()})  # type: ignore[func-returns-value]
+            )
+            if added:
                 st.rerun()
 
-            targets = selected if run_selected else (pool_files if run_all else [])
-            if targets:
-                prog = st.progress(0, text="Starting…")
-                for idx, fpath in enumerate(targets):
-                    prog.progress(idx / len(targets), text=f"Processing {fpath.name}…")
-                    try:
-                        with st.spinner(f"Parsing {fpath.name}…"):
-                            result, elapsed = run_extraction(fpath)
-                        st.session_state.results_cache[fpath.name] = {
-                            "result": result, "elapsed": elapsed,
-                        }
-                    except Exception as exc:
-                        st.session_state.results_cache[fpath.name] = {"error": str(exc)}
-                prog.progress(1.0, text="Done")
+        names = _all_names()
+        selected: list[str] = []
 
-            if st.session_state.results_cache:
-                st.divider()
-                st.subheader("Results")
+        if names:
+            st.divider()
+            hc1, hc2, hc3, hc4 = st.columns([4, 1, 1, 1])
+            hc1.caption("File"); hc2.caption("Size"); hc3.caption("Status"); hc4.caption("Select")
 
-                import pandas as pd
-                table_rows = []
-                for fname, data in st.session_state.results_cache.items():
-                    if "error" in data:
-                        table_rows.append({"file": fname, "error": data["error"]})
-                    else:
-                        row = flatten_scalar(data["result"])
-                        row["file"] = fname
-                        row["time_s"] = f"{data['elapsed']:.1f}s"
-                        table_rows.append(row)
+            for name in names:
+                is_upload = name in st.session_state.upload_pool
+                cached    = name in st.session_state.results_cache
+                status    = "done" if cached else "—"
+                tag       = "↑" if is_upload else "●"
 
-                if table_rows:
-                    df = pd.DataFrame(table_rows)
-                    cols_order = ["file"] + [c for c in df.columns if c != "file"]
-                    st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
+                fc1, fc2, fc3, fc4 = st.columns([4, 1, 1, 1])
+                fc1.markdown(f"`{tag}` {name}")
+                fc2.caption(f"{_size_kb(name)} KB")
+                fc3.caption(status)
+                if fc4.checkbox("select", key=f"sel_{name}", label_visibility="collapsed"):
+                    selected.append(name)
 
-                all_results = {
-                    fn: d.get("result", {"error": d.get("error")})
-                    for fn, d in st.session_state.results_cache.items()
-                }
-                st.download_button(
-                    "Download all (JSON)",
-                    data=json.dumps(all_results, indent=2, default=str),
-                    file_name="batch_extracted.json",
-                    mime="application/json",
-                )
+                if is_upload:
+                    # remove button inline after the row
+                    if st.button(f"Remove {name}", key=f"rm_{name}",
+                                 help="Remove from workspace", type="tertiary"):
+                        del st.session_state.upload_pool[name]
+                        st.session_state.results_cache.pop(name, None)
+                        st.rerun()
 
-                with st.expander("Per-document detail"):
-                    for fname, data in st.session_state.results_cache.items():
-                        st.markdown(f"### {fname}")
-                        if "error" in data:
-                            st.error(data["error"])
-                        else:
-                            show_result(data["result"], data["elapsed"], fname)
+    # ── Action bar ─────────────────────────────────────────────────────────────
+    if names:
+        st.write("")
+        ac1, ac2, ac3, ac4 = st.columns([2, 2, 2, 2])
+        n_sel = len(selected)
+        run_sel = ac1.button(
+            f"Extract selected ({n_sel})" if n_sel else "Extract selected",
+            disabled=n_sel == 0, type="primary",
+        )
+        run_all  = ac2.button("Extract all", type="primary")
+        run_one  = ac3.button(
+            "Extract first selected" if n_sel == 1 else "Single file",
+            disabled=n_sel != 1,
+        )
+        clr      = ac4.button("Clear results")
 
-    # ── Single mode ────────────────────────────────────────────────────────────
-    else:
-        left, right = st.columns([1, 2])
-        with left:
-            src = st.radio("Pick document", ["From pool", "Upload"])
-            chosen_path: Path | None = None
-            chosen_name = ""
+        if clr:
+            st.session_state.results_cache = {}
+            st.session_state.single_result = None
+            st.rerun()
 
-            if src == "From pool":
-                pool_files2 = get_pool_files()
-                chosen_name = st.selectbox("Select file", [f.name for f in pool_files2])
-                chosen_path = (POOL_DIR / chosen_name) if chosen_name else None
-            else:
-                uploaded = st.file_uploader("Upload PDF or DOCX", type=["pdf", "docx"])
-                if uploaded:
-                    suffix = Path(uploaded.name).suffix.lower()
-                    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-                    tmp.write(uploaded.read())
-                    tmp.close()
-                    chosen_path = Path(tmp.name)
-                    chosen_name = uploaded.name
-
-            extract_btn = st.button("Extract", type="primary", disabled=not chosen_path)
-
-        with right:
-            if extract_btn and chosen_path:
+        # ── Run batch ──────────────────────────────────────────────────────────
+        targets = selected if run_sel else (names if run_all else [])
+        if targets:
+            prog = st.progress(0, text="Starting…")
+            for i, name in enumerate(targets):
+                prog.progress(i / len(targets), text=f"Processing {name}…")
                 try:
-                    with st.spinner(f"Extracting {chosen_name}…"):
-                        result, elapsed = run_extraction(chosen_path)
-                    st.session_state.single_result = (result, elapsed, chosen_name)
+                    with st.spinner(f"Extracting {name}…"):
+                        res, el = _run_extraction(name)
+                    st.session_state.results_cache[name] = {"result": res, "elapsed": el}
                 except Exception as exc:
-                    st.error(f"Error: {exc}")
+                    st.session_state.results_cache[name] = {"error": str(exc)}
+            prog.progress(1.0, text="Done")
 
-            if "single_result" in st.session_state:
-                res, elapsed, fname = st.session_state.single_result
-                show_result(res, elapsed, fname)
+        # ── Single file ────────────────────────────────────────────────────────
+        if run_one and n_sel == 1:
+            name = selected[0]
+            try:
+                with st.spinner(f"Extracting {name}…"):
+                    res, el = _run_extraction(name)
+                st.session_state.single_result = (res, el, name)
+            except Exception as exc:
+                st.error(str(exc))
+
+    # ── Results ────────────────────────────────────────────────────────────────
+    if st.session_state.single_result and not (names and (
+        any(st.session_state.get(f"sel_{n}") for n in names)
+        and st.session_state.results_cache
+    )):
+        res, el, fname = st.session_state.single_result
+        st.divider()
+        _show_result(res, el, fname)
+
+    if st.session_state.results_cache:
+        import pandas as pd
+        st.divider()
+        st.subheader("Batch results")
+
+        rows = []
+        for fname, data in st.session_state.results_cache.items():
+            if "error" in data:
+                rows.append({"file": fname, "error": data["error"]})
+            else:
+                r = _flatten_scalar(data["result"])
+                r["file"] = fname
+                r["time_s"] = f"{data['elapsed']:.1f}s"
+                rows.append(r)
+
+        df = pd.DataFrame(rows)
+        df.columns = _dedup(list(df.columns))
+        cols_order = ["file"] + [c for c in df.columns if c != "file"]
+        st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "Download all (JSON)",
+            data=json.dumps(
+                {fn: d.get("result", {"error": d.get("error")})
+                 for fn, d in st.session_state.results_cache.items()},
+                indent=2, default=str,
+            ),
+            file_name="batch_extracted.json",
+            mime="application/json",
+        )
+
+        with st.expander("Per-document detail"):
+            for fname, data in st.session_state.results_cache.items():
+                st.markdown(f"### {fname}")
+                if "error" in data:
+                    st.error(data["error"])
+                else:
+                    _show_result(data["result"], data["elapsed"], fname)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Full Explore
+# TAB 2 — Explore
 # ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_explore:
-    st.markdown("Parse a document and view all its structured content — text, tables, layout.")
-    left2, right2 = st.columns([1, 2])
+    st.markdown("Parse a document and inspect all its raw content — text, tables, layout.")
+    names = _all_names()
 
-    with left2:
-        exp_src = st.radio("Pick document", ["From pool", "Upload"], key="exp_src")
-        exp_path: Path | None = None
-        exp_name = ""
+    if not names:
+        st.info("Upload files in the Extract tab first.")
+    else:
+        left, right = st.columns([1, 2])
+        with left:
+            exp_name = st.selectbox("Select file", names, key="exp_sel")
+            explore_btn = st.button("Parse & Explore", type="primary", disabled=not exp_name)
 
-        if exp_src == "From pool":
-            pool_exp = get_pool_files()
-            exp_name = st.selectbox("Select file", [f.name for f in pool_exp], key="exp_sel")
-            exp_path = (POOL_DIR / exp_name) if exp_name else None
-        else:
-            exp_up = st.file_uploader("Upload PDF or DOCX", type=["pdf", "docx"], key="exp_up")
-            if exp_up:
-                sfx = Path(exp_up.name).suffix.lower()
-                tmp2 = tempfile.NamedTemporaryFile(suffix=sfx, delete=False)
-                tmp2.write(exp_up.read())
-                tmp2.close()
-                exp_path = Path(tmp2.name)
-                exp_name = exp_up.name
+        with right:
+            if explore_btn and exp_name:
+                tmp = _make_temp(exp_name)
+                if tmp:
+                    with st.spinner(f"Parsing with {parser_key}…"):
+                        ep = parse_document(tmp, parser=parser_key,
+                                            llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+                    st.session_state.explore_result = full_explore(ep)
+                    st.session_state.explore_parsed = ep
 
-        explore_btn = st.button("Parse & Explore", type="primary", disabled=not exp_path)
-
-    with right2:
-        if explore_btn and exp_path:
-            with st.spinner(f"Parsing with {parser_key}…"):
-                ep = parse_document(exp_path, parser=parser_key,
-                                    llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
-            st.session_state.explore_result = full_explore(ep)
-            st.session_state.explore_parsed = ep
-
-        if st.session_state.explore_result:
             er = st.session_state.explore_result
+            if er:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Characters",   f"{er['total_chars']:,}")
+                m2.metric("Text spans",   er["span_elements"])
+                m3.metric("Tables found", er["tables_found"])
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Characters",    f"{er['total_chars']:,}")
-            m2.metric("Span elements", er["span_elements"])
-            m3.metric("Tables found",  er["tables_found"])
+                t1, t2, t3 = st.tabs(["Full text", "Tables", "Raw JSON"])
 
-            out_tabs = st.tabs(["Full text", "Tables", "Raw JSON"])
+                with t1:
+                    preview = er["text"][:15000]
+                    if len(er["text"]) > 15000:
+                        preview += "\n\n…(truncated)"
+                    st.markdown(preview)
+                    st.download_button("Download text", data=er["text"],
+                                       file_name="full_text.md", mime="text/markdown")
 
-            with out_tabs[0]:
-                preview = er["text"][:15000]
-                if len(er["text"]) > 15000:
-                    preview += "\n\n…(truncated)"
-                st.markdown(preview)
-                st.download_button(
-                    "Download full text",
-                    data=er["text"],
-                    file_name="full_text.md",
-                    mime="text/markdown",
-                )
+                with t2:
+                    if not er["tables"]:
+                        st.info("No tables detected.")
+                    for i, tbl in enumerate(er["tables"]):
+                        rows = tbl.get("data", [])
+                        with st.expander(
+                            f"Table {i+1} — page {tbl['page']}  "
+                            f"({tbl['rows']} rows × {tbl['cols']} cols)",
+                            expanded=(i == 0),
+                        ):
+                            _render_tbl(rows)
+                            if rows:
+                                hdr = _dedup([str(c or "").strip() for c in rows[0]])
+                                data_rows = [[_cell(c) for c in r] for r in rows[1:]]
+                                buf = io.StringIO()
+                                buf.write(",".join(hdr) + "\n")
+                                for r in data_rows:
+                                    buf.write(",".join(f'"{v}"' for v in r) + "\n")
+                                st.download_button(
+                                    "Download CSV",
+                                    data=buf.getvalue(),
+                                    file_name=f"table_{i+1}_p{tbl['page']}.csv",
+                                    mime="text/csv",
+                                    key=f"csv_{i}",
+                                )
 
-            with out_tabs[1]:
-                if not er["tables"]:
-                    st.info("No tables detected.")
-                for tbl in er["tables"]:
-                    st.markdown(f"**Table — page {tbl['page']} ({tbl['rows']} rows × {tbl['cols']} cols)**")
-                    rows = tbl.get("data", [])
-                    if rows:
-                        import pandas as pd
-                        header = rows[0]
-                        data_rows = rows[1:]
-                        try:
-                            df = pd.DataFrame(data_rows, columns=header)
-                        except Exception:
-                            df = pd.DataFrame(rows)
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-
-            with out_tabs[2]:
-                st.download_button(
-                    "Download full JSON",
-                    data=json.dumps(er, indent=2, default=str),
-                    file_name="full_explore.json",
-                    mime="application/json",
-                )
-                st.json(er, expanded=1)
+                with t3:
+                    st.download_button("Download JSON", data=json.dumps(er, indent=2, default=str),
+                                       file_name="full_explore.json", mime="application/json")
+                    st.json(er, expanded=1)
