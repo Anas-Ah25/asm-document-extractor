@@ -418,7 +418,8 @@ with tab_extract:
             st.rerun()
 
         # ── Run batch ──────────────────────────────────────────────────────────
-        targets = selected if run_sel else (names if run_all else [])
+        # Re-read file list fresh so newly uploaded files aren't missed.
+        targets = selected if run_sel else (_all_names() if run_all else [])
         if targets:
             prog = st.progress(0, text="Starting…")
             for i, name in enumerate(targets):
