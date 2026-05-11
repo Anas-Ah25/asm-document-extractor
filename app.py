@@ -383,18 +383,14 @@ with tab_extract:
     # ── Action bar ─────────────────────────────────────────────────────────────
     if names:
         st.write("")
-        ac1, ac2, ac3, ac4 = st.columns([2, 2, 2, 2])
+        ac1, ac2, ac3 = st.columns([3, 3, 2])
         n_sel = len(selected)
         run_sel = ac1.button(
             f"Extract selected ({n_sel})" if n_sel else "Extract selected",
             disabled=n_sel == 0, type="primary",
         )
-        run_all  = ac2.button("Extract all", type="primary")
-        run_one  = ac3.button(
-            "Extract first selected" if n_sel == 1 else "Single file",
-            disabled=n_sel != 1,
-        )
-        clr      = ac4.button("Clear results")
+        run_all = ac2.button("Extract all", type="primary")
+        clr     = ac3.button("Clear results")
 
         if clr:
             st.session_state.results_cache = {}
@@ -416,24 +412,7 @@ with tab_extract:
                     st.session_state.results_cache[name] = {"error": str(exc)}
             prog.progress(1.0, text="Done")
 
-        # ── Single file ────────────────────────────────────────────────────────
-        if run_one and n_sel == 1:
-            name = selected[0]
-            try:
-                with st.spinner(f"Extracting {name}…"):
-                    res, el = _run_extraction(name)
-                st.session_state.single_result = (res, el, name)
-            except Exception as exc:
-                st.error(str(exc))
-
     # ── Results ────────────────────────────────────────────────────────────────
-    if st.session_state.single_result and not (names and (
-        any(st.session_state.get(f"sel_{n}") for n in names)
-        and st.session_state.results_cache
-    )):
-        res, el, fname = st.session_state.single_result
-        st.divider()
-        _show_result(res, el, fname)
 
     if st.session_state.results_cache:
         import pandas as pd
