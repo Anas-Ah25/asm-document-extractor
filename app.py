@@ -37,9 +37,8 @@ div[data-testid="stFileUploaderDropzone"] { padding: 0.6rem; }
 
 # ── Session state ─────────────────────────────────────────────────────────────
 _defaults = {
-    "schema":         None,          # replaced below
-    "upload_pool":    {},             # {name: bytes}
-    "results_cache":  {},             # {name: {result, elapsed} | {error}}
+    "schema":         None,
+    "results_cache":  {},
     "explore_result": None,
     "explore_parsed": None,
     "single_result":  None,
@@ -50,36 +49,23 @@ for k, v in _defaults.items():
 
 
 # ── File helpers ──────────────────────────────────────────────────────────────
+# Uploaded files are written directly to POOL_DIR so they survive page refreshes
+# and new sessions without re-uploading.
+
+RESERVED_STEMS = {"app", "extractor"}
 
 def _disk_files() -> list[Path]:
     return sorted(
         [f for f in POOL_DIR.iterdir()
-         if f.suffix.lower() in SUPPORTED and f.stem not in ("app", "extractor")],
+         if f.suffix.lower() in SUPPORTED and f.stem not in RESERVED_STEMS],
         key=lambda f: f.name,
     )
 
 def _all_names() -> list[str]:
-    disk = [f.name for f in _disk_files()]
-    up   = list(st.session_state.upload_pool.keys())
-    return up + [n for n in disk if n not in up]
+    return [f.name for f in _disk_files()]
 
-def _bytes(name: str) -> bytes | None:
-    if name in st.session_state.upload_pool:
-        return st.session_state.upload_pool[name]
-    p = POOL_DIR / name
-    return p.read_bytes() if p.exists() else None
-
-def _make_temp(name: str) -> Path | None:
-    data = _bytes(name)
-    if not data:
-        return None
-    tmp = tempfile.NamedTemporaryFile(suffix=Path(name).suffix.lower(), delete=False)
-    tmp.write(data); tmp.close()
-    return Path(tmp.name)
 
 def _size_kb(name: str) -> int:
-    if name in st.session_state.upload_pool:
-        return len(st.session_state.upload_pool[name]) // 1024
     p = POOL_DIR / name
     return p.stat().st_size // 1024 if p.exists() else 0
 
@@ -253,10 +239,10 @@ with st.sidebar:
         if names_now:
             pick = st.selectbox("Sample document", names_now, key="infer_pick")
             if st.button("Run", key="run_infer", use_container_width=True):
-                tmp = _make_temp(pick)
-                if tmp:
+                path = POOL_DIR / pick
+                if path.exists():
                     with st.spinner("Inferring schema…"):
-                        parsed = parse_document(tmp, parser=parser_key,
+                        parsed = parse_document(path, parser=parser_key,
                                                 llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
                         suggested = infer_schema(parsed, LLM_BASE_URL, API_KEY, MODEL_NAME)
                     if suggested:
@@ -271,10 +257,10 @@ with st.sidebar:
 # ── Extraction helpers ────────────────────────────────────────────────────────
 
 def _run_extraction(name: str) -> tuple[dict, float]:
-    tmp = _make_temp(name)
-    if not tmp:
+    path = POOL_DIR / name
+    if not path.exists():
         raise FileNotFoundError(name)
-    parsed = parse_document(tmp, parser=parser_key,
+    parsed = parse_document(path, parser=parser_key,
                             llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
     if use_llm:
         result, elapsed = extract_schema_ollama(
@@ -358,14 +344,15 @@ with tab_extract:
                 label_visibility="collapsed",
             )
         with info_col:
-            st.caption("PDF or DOCX  \nFiles stay for this session.")
+            st.caption("PDF or DOCX  \nFiles are saved permanently.")
 
         if new_uploads:
-            added = sum(
-                1 for uf in new_uploads
-                if uf.name not in st.session_state.upload_pool
-                and not st.session_state.upload_pool.update({uf.name: uf.read()})  # type: ignore[func-returns-value]
-            )
+            added = 0
+            for uf in new_uploads:
+                dest = POOL_DIR / uf.name
+                if not dest.exists():
+                    dest.write_bytes(uf.read())
+                    added += 1
             if added:
                 st.rerun()
 
@@ -379,22 +366,19 @@ with tab_extract:
             hc4.caption("Select"); hc5.caption("Remove")
 
             for name in names:
-                is_upload = name in st.session_state.upload_pool
-                cached    = name in st.session_state.results_cache
-                status    = "done" if cached else "—"
-                tag       = "↑" if is_upload else "●"
+                cached = name in st.session_state.results_cache
+                status = "done" if cached else "—"
 
                 fc1, fc2, fc3, fc4, fc5 = st.columns([4, 1, 1, 1, 1])
-                fc1.markdown(f"`{tag}` {name}")
+                fc1.markdown(name)
                 fc2.caption(f"{_size_kb(name)} KB")
                 fc3.caption(status)
                 if fc4.checkbox("select", key=f"sel_{name}", label_visibility="collapsed"):
                     selected.append(name)
-                if is_upload:
-                    if fc5.button("✕", key=f"rm_{name}", help="Remove"):
-                        del st.session_state.upload_pool[name]
-                        st.session_state.results_cache.pop(name, None)
-                        st.rerun()
+                if fc5.button("✕", key=f"rm_{name}", help="Remove"):
+                    (POOL_DIR / name).unlink(missing_ok=True)
+                    st.session_state.results_cache.pop(name, None)
+                    st.rerun()
 
     # ── Action bar ─────────────────────────────────────────────────────────────
     if names:
@@ -509,10 +493,10 @@ with tab_explore:
 
         with right:
             if explore_btn and exp_name:
-                tmp = _make_temp(exp_name)
-                if tmp:
+                exp_path = POOL_DIR / exp_name
+                if exp_path.exists():
                     with st.spinner(f"Parsing with {parser_key}…"):
-                        ep = parse_document(tmp, parser=parser_key,
+                        ep = parse_document(exp_path, parser=parser_key,
                                             llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
                     st.session_state.explore_result = full_explore(ep)
                     st.session_state.explore_parsed = ep
