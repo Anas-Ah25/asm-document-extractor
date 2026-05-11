@@ -17,7 +17,7 @@ from extractor import (
 )
 
 POOL_DIR  = Path(__file__).parent
-SUPPORTED = {".pdf", ".docx"}
+SUPPORTED = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
 # ── LLM config (from Streamlit secrets or local fallback) ─────────────────────
 _s = st.secrets if hasattr(st, "secrets") else {}
@@ -339,7 +339,7 @@ with tab_extract:
         with up_col:
             new_uploads = st.file_uploader(
                 "Drop files here",
-                type=["pdf", "docx"],
+                type=["pdf", "docx", "png", "jpg", "jpeg", "tiff", "bmp"],
                 accept_multiple_files=True,
                 label_visibility="collapsed",
             )
@@ -411,6 +411,7 @@ with tab_extract:
                 except Exception as exc:
                     st.session_state.results_cache[name] = {"error": str(exc)}
             prog.progress(1.0, text="Done")
+            st.rerun()
 
     # ── Results ────────────────────────────────────────────────────────────────
 
