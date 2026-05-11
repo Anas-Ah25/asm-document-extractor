@@ -25,7 +25,7 @@ SUPPORTED = {".pdf", ".docx"}
 # Read from Streamlit secrets when deployed; fall back to local Ollama for dev.
 _secrets = st.secrets if hasattr(st, "secrets") else {}
 LLM_BASE_URL: str = _secrets.get("LLM_BASE_URL", "http://localhost:11434/v1")
-API_KEY:      str = _secrets.get("API_KEY",      "ollama")
+API_KEY:      str = _secrets.get("API_KEY",      "")
 MODEL_NAME:   str = _secrets.get("MODEL_NAME",   "gemma4:31b-cloud")
 
 st.set_page_config(page_title="ASM Extractor", layout="wide")
