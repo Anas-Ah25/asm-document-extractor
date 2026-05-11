@@ -1,5 +1,5 @@
 """
-ASM Document Extractor
+Document Extractor
 Parsers  : OCR (layout-aware) | Fast (no OCR)
 Backends : Regex | Ollama LLM
 """
@@ -26,7 +26,7 @@ API_KEY:      str = _s.get("API_KEY",      "")
 MODEL_NAME:   str = _s.get("MODEL_NAME",   "gemma4:31b-cloud")
 
 # ── Page ──────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="ASM Extractor", layout="wide")
+st.set_page_config(page_title="Document Extractor", layout="wide")
 st.markdown("""
 <style>
 .block-container  { padding-top: 1.2rem; }
@@ -128,16 +128,16 @@ with st.sidebar:
 
     parser_choice = st.selectbox(
         "Parser",
-        ["OCR — reads embedded images (recommended)", "Fast — no OCR"],
-        help="OCR uses layout detection + image OCR. Slower but catches scanned content.",
+        ["OCR supported", "Fast"],
+        help="OCR supported: layout detection + image OCR. Slower but catches scanned content.",
     )
-    parser_key = "pymupdf4llm" if parser_choice.startswith("OCR") else "pymupdf"
+    parser_key = "pymupdf4llm" if parser_choice == "OCR supported" else "pymupdf"
 
     backend_choice = st.radio(
         "Extraction backend",
-        ["Ollama LLM (accurate)", "Regex (fast, no LLM)"],
+        [f"LLM support — {MODEL_NAME}", "Regex (fast, no LLM)"],
     )
-    use_llm = backend_choice.startswith("Ollama")
+    use_llm = backend_choice.startswith("LLM")
 
     st.divider()
     st.subheader("Target Schema")
@@ -337,7 +337,7 @@ def _show_result(result: dict, elapsed: float, fname: str) -> None:
 
 # ── Main area ─────────────────────────────────────────────────────────────────
 
-st.title("ASM Document Extractor")
+st.title("Document Extractor")
 tab_extract, tab_explore = st.tabs(["Extract", "Explore"])
 
 
