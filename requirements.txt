@@ -1,0 +1,9 @@
+streamlit>=1.57.0
+pymupdf>=1.27.0
+pymupdf4llm>=1.27.0
+pdfplumber>=0.11.0
+python-docx>=1.2.0
+openai>=2.0.0
+instructor>=1.15.0
+pydantic>=2.0.0
+pandas>=2.0.0
