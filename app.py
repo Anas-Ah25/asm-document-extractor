@@ -374,8 +374,9 @@ with tab_extract:
 
         if names:
             st.divider()
-            hc1, hc2, hc3, hc4 = st.columns([4, 1, 1, 1])
-            hc1.caption("File"); hc2.caption("Size"); hc3.caption("Status"); hc4.caption("Select")
+            hc1, hc2, hc3, hc4, hc5 = st.columns([4, 1, 1, 1, 1])
+            hc1.caption("File"); hc2.caption("Size"); hc3.caption("Status")
+            hc4.caption("Select"); hc5.caption("Remove")
 
             for name in names:
                 is_upload = name in st.session_state.upload_pool
@@ -383,17 +384,14 @@ with tab_extract:
                 status    = "done" if cached else "—"
                 tag       = "↑" if is_upload else "●"
 
-                fc1, fc2, fc3, fc4 = st.columns([4, 1, 1, 1])
+                fc1, fc2, fc3, fc4, fc5 = st.columns([4, 1, 1, 1, 1])
                 fc1.markdown(f"`{tag}` {name}")
                 fc2.caption(f"{_size_kb(name)} KB")
                 fc3.caption(status)
                 if fc4.checkbox("select", key=f"sel_{name}", label_visibility="collapsed"):
                     selected.append(name)
-
                 if is_upload:
-                    # remove button inline after the row
-                    if st.button(f"Remove {name}", key=f"rm_{name}",
-                                 help="Remove from workspace", type="tertiary"):
+                    if fc5.button("✕", key=f"rm_{name}", help="Remove"):
                         del st.session_state.upload_pool[name]
                         st.session_state.results_cache.pop(name, None)
                         st.rerun()
