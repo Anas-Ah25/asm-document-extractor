@@ -222,32 +222,54 @@ def parse_docx(path: Path) -> dict:
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"}
 
 
-def parse_image(path: Path) -> dict:
-    """Wrap a raster image as a single fitz page and parse with pymupdf4llm (OCR)."""
-    import fitz, pymupdf4llm
-    # fitz can open images directly; embed as a PDF page for uniform handling
-    img_doc = fitz.open(str(path))
-    pdfbytes = img_doc.convert_to_pdf()
-    img_doc.close()
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.write(pdfbytes); tmp.close()
-    tmp_path = Path(tmp.name)
+def parse_image(path: Path, llm_base_url: str, api_key: str, model: str) -> dict:
+    """Send image directly to the LLM vision endpoint — no OCR pipeline needed."""
+    from openai import OpenAI
+    import mimetypes
+
+    mime = mimetypes.guess_type(str(path))[0] or "image/png"
+    img_b64 = base64.b64encode(path.read_bytes()).decode()
+
+    client = OpenAI(base_url=llm_base_url, api_key=api_key)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    "Convert this engineering document image to clean markdown. "
+                    "Preserve all tables as markdown tables with | separators. "
+                    "Include all text exactly as shown. Do not add commentary."
+                )},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+            ],
+        }],
+        temperature=0,
+    )
+    markdown = resp.choices[0].message.content or ""
+    # Best-effort span extraction via fitz (may be empty for raster images)
     try:
-        chunks = pymupdf4llm.to_markdown(str(tmp_path), page_chunks=True)
-        markdown = "\n\n".join(c["text"] for c in chunks)
+        import fitz
+        img_doc = fitz.open(str(path))
+        pdfbytes = img_doc.convert_to_pdf()
+        img_doc.close()
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.write(pdfbytes); tmp.close()
+        tmp_path = Path(tmp.name)
         elements = _fitz_spans(tmp_path)
         tables   = _plumber_tables(tmp_path)
-    finally:
         tmp_path.unlink(missing_ok=True)
+    except Exception:
+        elements, tables = [], []
     return {"text": markdown, "markdown": markdown, "elements": elements,
-            "tables": tables, "parser": f"image-ocr ({path.suffix})"}
+            "tables": tables, "parser": f"image-vision ({path.suffix})"}
 
 
 def parse_document(path: Path, parser: str = "pymupdf4llm",
                    llm_base_url: str = "", api_key: str = "ollama", model: str = "") -> dict:
     suffix = path.suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
-        return parse_image(path)
+        return parse_image(path, llm_base_url, api_key, model)
     if suffix != ".pdf":
         return parse_docx(path)
     if parser == "pymupdf":
