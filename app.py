@@ -36,12 +36,20 @@ div[data-testid="stFileUploaderDropzone"] { padding: 0.6rem; }
 </style>
 """, unsafe_allow_html=True)
 
+# Names that identify the OLD engineering schema — if found, auto-migrate
+_OLD_SCHEMA_MARKER = "document_number"
+
 # Schema persistence helpers
 def load_schema() -> list[dict]:
     if SCHEMA_FILE.exists():
         try:
             with open(SCHEMA_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+            # Auto-migrate: if this is the old engineering schema, discard it
+            if any(field.get("name") == _OLD_SCHEMA_MARKER for field in data):
+                SCHEMA_FILE.unlink(missing_ok=True)
+                return copy.deepcopy(DEFAULT_SCHEMA)
+            return data
         except Exception as e:
             st.sidebar.error(f"Error loading schema.json: {e}")
     return copy.deepcopy(DEFAULT_SCHEMA)
@@ -64,6 +72,11 @@ _defaults = {
 for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = load_schema() if k == "schema" else v
+
+# Auto-migrate stale session: if session has old engineering schema, replace it
+if any(f.get("name") == _OLD_SCHEMA_MARKER for f in (st.session_state.schema or [])):
+    st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
+    save_schema(st.session_state.schema)
 
 RESERVED_STEMS = {"app", "extractor", "clean_app"}
 
