@@ -148,7 +148,14 @@ def _plumber_tables(path: Path) -> list[dict]:
 def parse_pdf_pymupdf(path: Path) -> dict:
     elements = _fitz_spans(path)
     tables = _plumber_tables(path)
-    full_text = " ".join(e["text"] for e in elements)
+    
+    # Extract line-by-line layout text using fitz
+    pages_text = []
+    with fitz.open(str(path)) as doc:
+        for page in doc:
+            pages_text.append(page.get_text("text"))
+    full_text = "\n\n".join(pages_text)
+    
     return {"text": full_text, "markdown": None, "elements": elements,
             "tables": tables, "parser": "pymupdf"}
 
@@ -156,9 +163,23 @@ def parse_pdf_pymupdf(path: Path) -> dict:
 def parse_pdf_pymupdf4llm(path: Path) -> dict:
     chunks = pymupdf4llm.to_markdown(str(path), page_chunks=True)
     markdown = "\n\n".join(c["text"] for c in chunks)
+    
+    # Extract line-by-line layout text using fitz
+    pages_text = []
+    with fitz.open(str(path)) as doc:
+        for page in doc:
+            pages_text.append(page.get_text("text"))
+    raw_text = "\n\n".join(pages_text)
+    
+    # If the layout aware markdown parser missed/truncated content, fall back to/append layout text
+    if len(markdown.strip()) < len(raw_text.strip()) * 0.7:
+        text_source = f"{markdown}\n\n=== Raw Layout Text ===\n{raw_text}"
+    else:
+        text_source = markdown
+        
     elements = _fitz_spans(path)
     tables = _plumber_tables(path)
-    return {"text": markdown, "markdown": markdown, "elements": elements,
+    return {"text": text_source, "markdown": markdown, "elements": elements,
             "tables": tables, "parser": "pymupdf4llm"}
 
 # VLM page image parsing mode
@@ -378,6 +399,14 @@ def _build_extract_system(schema: list[dict]) -> str:
             "including any checkbox/mark columns, and return every row as a dict "
             "with those detected column names as keys."
         )
+    
+    # Add guidance for grid/table-structured scalar mapping
+    base += (
+        "\nNote: Many scalar fields (such as Terms, Due Date, Carton Count, Weight, and Invoice Totals) "
+        "are often positioned in a table grid or side-by-side header-value pairs. "
+        "Carefully map the values to their corresponding labels by reading the text layout. "
+        "Ensure you do not map labels to values of adjacent unrelated fields."
+    )
     return base
 
 # Numeric fields that should be cleaned of currency symbols and commas
