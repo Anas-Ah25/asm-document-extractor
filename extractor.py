@@ -303,11 +303,85 @@ def parse_document(path: Path, parser: str = "pymupdf4llm",
 def anchor(value: Optional[str], elements: list[dict]) -> Optional[dict]:
     if not value:
         return None
-    v = str(value).lower().strip()
+    
+    # 1. Clean the extracted value
+    v = str(value).strip()
+    if not v:
+        return None
+        
+    v_lower = v.lower()
+    
+    # Check if the value looks numeric/monetary
+    is_numeric = re.match(r'^\d+(\.\d+)?$', re.sub(r'[\$,\s\(\)\-]', '', v))
+    
+    def normalize_num(text: str) -> str:
+        # Strip all currency, commas, brackets, dashes, newlines
+        return re.sub(r'[\$,\s\(\)\-\n]', '', text).lower()
+        
+    # Helper to check if a short value matches as a whole token
+    def is_word_match(val: str, target: str) -> bool:
+        # Check boundary matching
+        pattern = rf"\b{re.escape(val)}\b"
+        return bool(re.search(pattern, target, re.IGNORECASE))
+
+    # --- Pass 1: Try exact or normalized numeric/monetary match ---
     for e in elements:
-        if v in e["text"].lower():
-            return {"page": e.get("page"), "bbox": e.get("bbox"),
-                    "source_text": e["text"]}
+        span_text = e.get("text", "").strip()
+        if not span_text:
+            continue
+        span_lower = span_text.lower()
+        
+        # Numeric normalized match
+        if is_numeric:
+            norm_v = normalize_num(v)
+            norm_span = normalize_num(span_text)
+            if norm_v and norm_v in norm_span:
+                # Double check to prevent short digits from matching longer numbers (e.g. "9" matching "90021")
+                if len(norm_v) < 3:
+                    if is_word_match(norm_v, norm_span) or norm_v == norm_span:
+                        return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
+                else:
+                    return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
+        
+        # Substring/Whole-word match
+        if v_lower in span_lower:
+            if len(v_lower) < 3:
+                # Force word boundary check for short strings (like "9")
+                if is_word_match(v_lower, span_lower):
+                    return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
+            else:
+                return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
+
+    # --- Pass 2: Fallback for multi-line/concatenated strings (addresses) ---
+    # Try to match the street address line first (usually lines[1]) as it is more unique,
+    # then fallback to other lines.
+    lines = [line.strip() for line in v.split('\n') if line.strip()]
+    if len(lines) > 1:
+        # Try second line first, then first line, then others
+        search_order = []
+        if len(lines) > 1:
+            search_order.append(lines[1])
+        search_order.append(lines[0])
+        for line in lines[2:]:
+            search_order.append(line)
+            
+        for line in search_order:
+            res = anchor(line, elements)
+            if res:
+                res["source_text"] = f"{v} (Matched: {line})"
+                return res
+
+    # --- Pass 3: Last resort token overlap check for longer strings ---
+    if len(v_lower) > 5:
+        # Check if the span contains most of the words from the start of the value
+        v_words = [w for w in re.split(r'\W+', v_lower) if w]
+        if v_words:
+            first_few = " ".join(v_words[:2])
+            if len(first_few) > 3:
+                for e in elements:
+                    if e.get("text") and first_few in e["text"].lower():
+                        return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
+
     return None
 
 # Attach spatial citations to extraction properties
