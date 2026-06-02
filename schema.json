@@ -96,12 +96,6 @@
     "description": "Shipping method (labeled Shipped Via, Shipping Method, Via, e.g., UPS, Truck, Pickup)"
   },
   {
-    "name": "sales_rep",
-    "field_type": "scalar",
-    "enabled": true,
-    "description": "Sales representative name (labeled Sales Representative, Rep)"
-  },
-  {
     "name": "amount",
     "field_type": "scalar",
     "enabled": true,
