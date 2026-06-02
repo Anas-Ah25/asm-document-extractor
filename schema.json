@@ -1,0 +1,158 @@
+[
+  {
+    "name": "invoice_no",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Invoice number (labeled Invoice Number, Invoice #, Invoice No, No. located top right)"
+  },
+  {
+    "name": "tracking_no",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Tracking number (labeled Tracking Number)"
+  },
+  {
+    "name": "pick_ticket_no",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Pick ticket number (labeled Pick Ticket #)"
+  },
+  {
+    "name": "po_no",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Purchase order number (labeled Purchase Order Number, Customer PO, PO#, Cust PO, Customer PO No)"
+  },
+  {
+    "name": "order_no",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Order number (labeled Order Number, Sales Order, Sales Order #)"
+  },
+  {
+    "name": "invoice_date",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Invoice date (labeled Invoicing Data, Date)"
+  },
+  {
+    "name": "term",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Payment terms (labeled Terms, e.g., NET 45, NET 30, 2% NET 15)"
+  },
+  {
+    "name": "pmt_method",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Payment method (labeled Payment Method, e.g., Wire)"
+  },
+  {
+    "name": "invoice_due",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Invoice due date (labeled Invoice Due Date, Due)"
+  },
+  {
+    "name": "sold_to",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Billing address (labeled Sold To, Billing Address)"
+  },
+  {
+    "name": "ship_to",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Shipping address (labeled Ship To, Shipping Address)"
+  },
+  {
+    "name": "weight",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Weight (numeric value)"
+  },
+  {
+    "name": "no_ctns",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Number of containers (labeled Number of containers, # CTNS, Carto. Numeric value)"
+  },
+  {
+    "name": "order_date",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Order date (labeled Ordered)"
+  },
+  {
+    "name": "ship_date",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Shipping date (labeled Shipping Date, Ship)"
+  },
+  {
+    "name": "ship_via",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Shipping method (labeled Shipped Via, Shipping Method, Via, e.g., UPS, Truck, Pickup)"
+  },
+  {
+    "name": "sales_rep",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Sales representative name (labeled Sales Representative, Rep)"
+  },
+  {
+    "name": "amount",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Total amount due (labeled Total Amount, Total, Total Invoice, Merchandise Total, Total Due, Invoice Total)"
+  },
+  {
+    "name": "sub_total",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Sub total (numeric value)"
+  },
+  {
+    "name": "freight",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Freight charges (labeled Freight and Handling, Shipping. Numeric value)"
+  },
+  {
+    "name": "misc",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Miscellaneous charges (labeled Additional charge, Addi Charge, Other Charge. Numeric value)"
+  },
+  {
+    "name": "sales_tax",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Sales tax amount (numeric value)"
+  },
+  {
+    "name": "discount",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Discount amount (labeled Disc./Write-off. Numeric value)"
+  },
+  {
+    "name": "deposit",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Paid/Deposit amount (labeled Paid, Payment. Numeric value)"
+  },
+  {
+    "name": "credit_applied",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Credit applied (decimal value)"
+  },
+  {
+    "name": "balance_due",
+    "field_type": "scalar",
+    "enabled": true,
+    "description": "Balance due (labeled Balance, Total balance Due. Numeric value)"
+  }
+]
