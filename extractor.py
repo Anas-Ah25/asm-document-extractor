@@ -348,10 +348,14 @@ def _build_extract_system(schema: list[dict]) -> str:
                    if f["enabled"] and f["field_type"] == "table"
                    and f.get("columns_mode", "defined") == "auto"]
     base = (
-        "You are extracting structured data from an engineering order specification. "
+        "You are extracting structured data from a document. "
         "Extract every field exactly as it appears in the document. Use null for missing values. "
         "For table/array fields extract ALL rows present. "
-        "Preserve checkbox and selection markers exactly (e.g. ●, ○, ✓, ✗, X, checked, unchecked)."
+        "Preserve checkbox and selection markers exactly (e.g. ●, ○, ✓, ✗, X, checked, unchecked). "
+        "For all numeric or monetary fields (amounts, totals, taxes, weights, quantities, etc.): "
+        "return ONLY the plain numeric value — strip any currency symbols ($, €, £, ¥), "
+        "commas used as thousands separators, and surrounding whitespace. "
+        "Example: '$1,234.56' → '1234.56', '$ 500' → '500'."
     )
     if auto_tables:
         names = ", ".join(auto_tables)
@@ -362,6 +366,39 @@ def _build_extract_system(schema: list[dict]) -> str:
             "with those detected column names as keys."
         )
     return base
+
+# Numeric fields that should be cleaned of currency symbols and commas
+_NUMERIC_FIELD_HINTS = re.compile(
+    r'(amount|total|subtotal|sub_total|tax|freight|misc|discount|deposit|credit|balance|weight|price|cost|charge|fee)',
+    re.IGNORECASE,
+)
+
+def _clean_numeric_value(val: str) -> str:
+    """Strip currency symbols and thousands-separator commas from a string that looks numeric."""
+    if not isinstance(val, str):
+        return val
+    stripped = val.strip()
+    # Remove currency symbols and leading/trailing whitespace
+    cleaned = re.sub(r'^[\$€£¥\s]+', '', stripped).strip()
+    # Remove commas used as thousands separators (only if number-like)
+    if re.match(r'^-?[\d,]+(\.\d+)?$', cleaned):
+        cleaned = cleaned.replace(',', '')
+    return cleaned if cleaned else val
+
+def _clean_numeric_fields(result: dict, schema: list[dict]) -> dict:
+    """Post-process extracted result: clean currency symbols from numeric-looking scalar fields."""
+    numeric_fields = {
+        f["name"] for f in schema
+        if f["field_type"] == "scalar" and f["enabled"]
+        and (_NUMERIC_FIELD_HINTS.search(f["name"]) or _NUMERIC_FIELD_HINTS.search(f.get("description", "")))
+    }
+    cleaned = {}
+    for k, v in result.items():
+        if k in numeric_fields and isinstance(v, str):
+            cleaned[k] = _clean_numeric_value(v)
+        else:
+            cleaned[k] = v
+    return cleaned
 
 # Pydantic structured output extraction using Instructor
 def extract_schema_ollama(
@@ -389,7 +426,7 @@ def extract_schema_ollama(
         response_model=DynamicModel,
         max_retries=2,
     )
-    return result.model_dump(), time.time() - t0
+    return _clean_numeric_fields(result.model_dump(), schema), time.time() - t0
 
 # Base regex expressions for deterministic extraction
 _REGEX: dict[str, str] = {
@@ -494,7 +531,7 @@ def extract_schema_regex(parsed: dict, schema: list[dict]) -> tuple[dict, float]
 
             result[name] = rows
 
-    return result, time.time() - t0
+    return _clean_numeric_fields(result, schema), time.time() - t0
 
 # Document metric exploration utility
 def full_explore(parsed: dict) -> dict:
