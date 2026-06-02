@@ -1,13 +1,13 @@
-"""
-Document Extractor
-Parsers  : OCR (layout-aware) | Fast (no OCR)
-Backends : Regex | Ollama LLM
-"""
 from __future__ import annotations
-import json, copy, tempfile, time, re, io
+import json
+import copy
+import time
+import re
+import io
 from pathlib import Path
 
 import streamlit as st
+import pandas as pd
 
 from extractor import (
     parse_document, full_explore,
@@ -16,44 +16,58 @@ from extractor import (
     DEFAULT_SCHEMA,
 )
 
-POOL_DIR  = Path(__file__).parent
+POOL_DIR = Path(__file__).parent
+SCHEMA_FILE = POOL_DIR / "schema.json"
 SUPPORTED = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
-# ── LLM config (from Streamlit secrets or local fallback) ─────────────────────
+# Connection credentials
 _s = st.secrets if hasattr(st, "secrets") else {}
 LLM_BASE_URL: str = _s.get("LLM_BASE_URL", "http://localhost:11434/v1")
-API_KEY:      str = _s.get("API_KEY",      "")
-MODEL_NAME:   str = _s.get("MODEL_NAME",   "gemma4:31b-cloud")
+API_KEY: str = _s.get("API_KEY", "")
+MODEL_NAME: str = _s.get("MODEL_NAME", "gemma4:31b-cloud")
 
-# ── Page ──────────────────────────────────────────────────────────────────────
+# Page Layout
 st.set_page_config(page_title="Document Extractor", layout="wide")
 st.markdown("""
 <style>
-.block-container  { padding-top: 1.2rem; }
+.block-container { padding-top: 1.2rem; }
 .stTabs [data-baseweb="tab"] { font-size: 0.9rem; }
 div[data-testid="stFileUploaderDropzone"] { padding: 0.6rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state ─────────────────────────────────────────────────────────────
+# Schema persistence helpers
+def load_schema() -> list[dict]:
+    if SCHEMA_FILE.exists():
+        try:
+            with open(SCHEMA_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            st.sidebar.error(f"Error loading schema.json: {e}")
+    return copy.deepcopy(DEFAULT_SCHEMA)
+
+def save_schema(schema_data: list[dict]) -> None:
+    try:
+        with open(SCHEMA_FILE, "w") as f:
+            json.dump(schema_data, f, indent=2)
+    except Exception as e:
+        st.sidebar.error(f"Error saving schema: {e}")
+
+# Session States
 _defaults = {
-    "schema":         None,
-    "results_cache":  {},
+    "schema": None,
+    "results_cache": {},
     "explore_result": None,
     "explore_parsed": None,
-    "single_result":  None,
+    "single_result": None,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
-        st.session_state[k] = copy.deepcopy(DEFAULT_SCHEMA) if k == "schema" else v
+        st.session_state[k] = load_schema() if k == "schema" else v
 
+RESERVED_STEMS = {"app", "extractor", "clean_app"}
 
-# ── File helpers ──────────────────────────────────────────────────────────────
-# Uploaded files are written directly to POOL_DIR so they survive page refreshes
-# and new sessions without re-uploading.
-
-RESERVED_STEMS = {"app", "extractor"}
-
+# File listing helper
 def _disk_files() -> list[Path]:
     return sorted(
         [f for f in POOL_DIR.iterdir()
@@ -64,14 +78,11 @@ def _disk_files() -> list[Path]:
 def _all_names() -> list[str]:
     return [f.name for f in _disk_files()]
 
-
 def _size_kb(name: str) -> int:
     p = POOL_DIR / name
     return p.stat().st_size // 1024 if p.exists() else 0
 
-
-# ── Display helpers ───────────────────────────────────────────────────────────
-
+# Duplicate header normalization
 def _dedup(headers: list[str]) -> list[str]:
     seen: dict[str, int] = {}
     out = []
@@ -81,15 +92,17 @@ def _dedup(headers: list[str]) -> list[str]:
         out.append(h if seen[h] == 1 else f"{h}_{seen[h]}")
     return out
 
+# Cel formatting and truncation
 def _cell(val: object, max_len: int = 120) -> str:
     s = re.sub(r"\s*\n\s*", " · ", str(val or "").strip())
     s = re.sub(r"  +", " ", s)
     return s[:max_len] + "…" if len(s) > max_len else s
 
+# Clean table printing helper
 def _render_tbl(rows: list[list]) -> None:
-    import pandas as pd
     if not rows:
-        st.caption("(empty)"); return
+        st.caption("(empty)")
+        return
     hdr = [str(c or "").strip() for c in rows[0]]
     data = rows[1:]
     if hdr.count("") / max(len(hdr), 1) > 0.5:
@@ -98,24 +111,24 @@ def _render_tbl(rows: list[list]) -> None:
     cleaned = []
     for r in data:
         row = [_cell(c) for c in r]
-        while len(row) < len(hdr): row.append("")
+        while len(row) < len(hdr):
+            row.append("")
         cleaned.append(row[:len(hdr)])
     if not cleaned:
-        st.caption("(no data rows)"); return
+        st.caption("(no data rows)")
+        return
     df = pd.DataFrame(cleaned, columns=hdr)
     df = df.loc[:, (df != "").any(axis=0)]
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-
-# ── Sidebar — Settings + Schema ───────────────────────────────────────────────
-
+# Sidebar configurations
 with st.sidebar:
     st.title("Settings")
 
     parser_choice = st.selectbox(
         "Parser",
         ["OCR supported", "Fast"],
-        help="OCR supported: layout detection + image OCR. Slower but catches scanned content.",
+        help="OCR supported utilizes layout-aware parsing. Fast uses standard extraction.",
     )
     parser_key = "pymupdf4llm" if parser_choice == "OCR supported" else "pymupdf"
 
@@ -130,16 +143,20 @@ with st.sidebar:
 
     schema = st.session_state.schema
 
-    # ── Scalar fields ──────────────────────────────────────────────────────────
+    # Scalar configurations UI
     with st.expander("Scalar fields", expanded=True):
         for f in [f for f in schema if f["field_type"] == "scalar"]:
             idx = schema.index(f)
-            c1, c2 = st.columns([1, 5])
+            c1, c2, c3 = st.columns([1, 5, 1])
             schema[idx]["enabled"] = c1.checkbox(
                 f["name"], value=f["enabled"], key=f"sf_{f['name']}",
                 label_visibility="collapsed",
             )
             c2.caption(f"**{f['name']}** — {f['description'][:48]}")
+            if c3.button("✕", key=f"rm_sf_{f['name']}", help="Remove field"):
+                schema.pop(idx)
+                save_schema(schema)
+                st.rerun()
 
         with st.form("add_scalar", clear_on_submit=True):
             c1, c2 = st.columns(2)
@@ -151,23 +168,27 @@ with st.sidebar:
                     "description": sdesc.strip() or sname.strip(),
                     "field_type": "scalar", "enabled": True,
                 })
+                save_schema(schema)
                 st.rerun()
 
-    # ── Table fields ───────────────────────────────────────────────────────────
+    # Table configurations UI
     with st.expander("Table fields", expanded=True):
         for f in [f for f in schema if f["field_type"] == "table"]:
             idx = schema.index(f)
-            c1, c2 = st.columns([1, 5])
+            c1, c2, c3 = st.columns([1, 5, 1])
             schema[idx]["enabled"] = c1.checkbox(
                 f["name"], value=f["enabled"], key=f"tf_{f['name']}",
                 label_visibility="collapsed",
             )
             c2.caption(f"**{f['name']}** — {f['description'][:38]}")
+            if c3.button("✕", key=f"rm_tf_{f['name']}", help="Remove table field"):
+                schema.pop(idx)
+                save_schema(schema)
+                st.rerun()
 
             if not f["enabled"]:
                 continue
 
-            # Auto / Defined toggle
             cur_mode = f.get("columns_mode", "defined")
             new_mode = st.segmented_control(
                 "Columns",
@@ -178,9 +199,8 @@ with st.sidebar:
             schema[idx]["columns_mode"] = "auto" if new_mode == "Auto-detect" else "defined"
 
             if schema[idx]["columns_mode"] == "auto":
-                st.caption("LLM detects all columns including checkboxes / marks.")
+                st.caption("The model will automatically infer all columns.")
             else:
-                # Existing columns: toggle + remove
                 cols_list = schema[idx].get("columns", [])
                 for ci, col in enumerate(cols_list):
                     cc1, cc2, cc3 = st.columns([1, 5, 1])
@@ -192,9 +212,9 @@ with st.sidebar:
                     cc2.caption(f"`{col['name']}` — {col['description'][:32]}")
                     if cc3.button("✕", key=f"rm_col_{f['name']}_{ci}", help="Remove column"):
                         schema[idx]["columns"].pop(ci)
+                        save_schema(schema)
                         st.rerun()
 
-                # Add column inline (outside form to allow remove buttons above)
                 with st.form(f"add_col_{f['name']}", clear_on_submit=True):
                     ac1, ac2 = st.columns(2)
                     cname = ac1.text_input("Column name", placeholder="item_number", key=f"cn_{f['name']}")
@@ -205,16 +225,16 @@ with st.sidebar:
                             "description": cdesc.strip() or cname.strip(),
                             "enabled": True,
                         })
+                        save_schema(schema)
                         st.rerun()
 
             st.divider()
 
-        # Add new table field
         with st.form("add_table", clear_on_submit=True):
             tname = st.text_input("Table name", placeholder="line_items")
             tdesc = st.text_input("Description", placeholder="Order line items")
             tauto = st.toggle("Auto-detect columns", value=True,
-                              help="LLM detects columns + marks. Disable to define columns manually.")
+                              help="Allows dynamic mapping of tables without fixed schemas.")
             if st.form_submit_button("+ Add table field", use_container_width=True) and tname.strip():
                 schema.append({
                     "name": tname.strip().lower().replace(" ", "_"),
@@ -223,12 +243,13 @@ with st.sidebar:
                     "columns_mode": "auto" if tauto else "defined",
                     "columns": [],
                 })
+                save_schema(schema)
                 st.rerun()
 
-    # Reset / Infer
     c1, c2 = st.columns(2)
     if c1.button("Reset schema", use_container_width=True):
         st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
+        save_schema(st.session_state.schema)
         st.rerun()
     if c2.button("Infer schema", use_container_width=True,
                  help="Let the LLM suggest a schema from a sample document"):
@@ -243,19 +264,21 @@ with st.sidebar:
                 if path.exists():
                     with st.spinner("Inferring schema…"):
                         parsed = parse_document(path, parser=parser_key,
-                                                llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+                                                 llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
                         suggested = infer_schema(parsed, LLM_BASE_URL, API_KEY, MODEL_NAME)
                     if suggested:
                         st.session_state.schema = suggested
+                        save_schema(suggested)
                         st.session_state._infer_pending = False
                         st.rerun()
         else:
             st.caption("Upload a file first.")
             st.session_state._infer_pending = False
 
+    # Auto-save schema at the end of sidebar configuration block
+    save_schema(schema)
 
-# ── Extraction helpers ────────────────────────────────────────────────────────
-
+# Run extraction logic helper
 def _run_extraction(name: str) -> tuple[dict, float]:
     path = POOL_DIR / name
     if not path.exists():
@@ -275,6 +298,7 @@ def _flatten_scalar(result: dict) -> dict:
     return {k: (v.get("value", "") if isinstance(v, dict) else v)
             for k, v in result.items() if k in scalar_names}
 
+# Render details on extraction completion
 def _show_result(result: dict, elapsed: float, fname: str) -> None:
     backend = f"Ollama ({MODEL_NAME})" if use_llm else "Regex"
     st.success(f"**{fname}** — {parser_key} + {backend} — {elapsed:.1f}s")
@@ -301,8 +325,8 @@ def _show_result(result: dict, elapsed: float, fname: str) -> None:
         rows_raw = result.get(field, [])
         st.markdown(f"**{field}**")
         if not rows_raw:
-            st.caption("No rows found."); continue
-        import pandas as pd
+            st.caption("No rows found.")
+            continue
         rows = [{k: _cell(v.get("value", "") if isinstance(v, dict) else v)
                  for k, v in row.items()} for row in rows_raw]
         df = pd.DataFrame(rows)
@@ -320,20 +344,12 @@ def _show_result(result: dict, elapsed: float, fname: str) -> None:
     with c2.expander("Raw JSON"):
         st.json(result, expanded=1)
 
-
-# ── Main area ─────────────────────────────────────────────────────────────────
-
+# Streamlit App Main Area
 st.title("Document Extractor")
 tab_extract, tab_explore = st.tabs(["Extract", "Explore"])
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Extract
-# ═══════════════════════════════════════════════════════════════════════════════
-
 with tab_extract:
-
-    # ── Workspace ──────────────────────────────────────────────────────────────
+    # Workspace management
     with st.container(border=True):
         up_col, info_col = st.columns([3, 1])
         with up_col:
@@ -380,7 +396,7 @@ with tab_extract:
                     st.session_state.results_cache.pop(name, None)
                     st.rerun()
 
-    # ── Action bar ─────────────────────────────────────────────────────────────
+    # Batch extraction operations
     if names:
         st.write("")
         ac1, ac2, ac3 = st.columns([3, 3, 2])
@@ -397,8 +413,6 @@ with tab_extract:
             st.session_state.single_result = None
             st.rerun()
 
-        # ── Run batch ──────────────────────────────────────────────────────────
-        # Re-read file list fresh so newly uploaded files aren't missed.
         targets = selected if run_sel else (_all_names() if run_all else [])
         if targets:
             prog = st.progress(0, text="Starting…")
@@ -413,10 +427,8 @@ with tab_extract:
             prog.progress(1.0, text="Done")
             st.rerun()
 
-    # ── Results ────────────────────────────────────────────────────────────────
-
+    # Batch results view
     if st.session_state.results_cache:
-        import pandas as pd
         st.divider()
         st.subheader("Batch results")
 
@@ -454,11 +466,7 @@ with tab_extract:
                 else:
                     _show_result(data["result"], data["elapsed"], fname)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Explore
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# Explorer View Tab
 with tab_explore:
     st.markdown("Parse a document and inspect all its raw content — text, tables, layout.")
     names = _all_names()
@@ -477,7 +485,7 @@ with tab_explore:
                 if exp_path.exists():
                     with st.spinner(f"Parsing with {parser_key}…"):
                         ep = parse_document(exp_path, parser=parser_key,
-                                            llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+                                             llm_base_url=LLM_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
                     st.session_state.explore_result = full_explore(ep)
                     st.session_state.explore_parsed = ep
 
