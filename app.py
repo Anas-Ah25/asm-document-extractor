@@ -163,13 +163,17 @@ with st.sidebar:
             sname = c1.text_input("Name", placeholder="po_number")
             sdesc = c2.text_input("Description", placeholder="Purchase order #")
             if st.form_submit_button("+ Add field", use_container_width=True) and sname.strip():
-                schema.append({
-                    "name": sname.strip().lower().replace(" ", "_"),
-                    "description": sdesc.strip() or sname.strip(),
-                    "field_type": "scalar", "enabled": True,
-                })
-                save_schema(schema)
-                st.rerun()
+                normalized_name = sname.strip().lower().replace(" ", "_")
+                if any(f["name"] == normalized_name for f in schema):
+                    st.error(f"Field '{normalized_name}' already exists.")
+                else:
+                    schema.append({
+                        "name": normalized_name,
+                        "description": sdesc.strip() or sname.strip(),
+                        "field_type": "scalar", "enabled": True,
+                    })
+                    save_schema(schema)
+                    st.rerun()
 
     # Table configurations UI
     with st.expander("Table fields", expanded=True):
@@ -220,13 +224,18 @@ with st.sidebar:
                     cname = ac1.text_input("Column name", placeholder="item_number", key=f"cn_{f['name']}")
                     cdesc = ac2.text_input("Description",  placeholder="Item #",      key=f"cd_{f['name']}")
                     if st.form_submit_button("+ Add column", use_container_width=True) and cname.strip():
-                        schema[idx]["columns"].append({
-                            "name": cname.strip().lower().replace(" ", "_"),
-                            "description": cdesc.strip() or cname.strip(),
-                            "enabled": True,
-                        })
-                        save_schema(schema)
-                        st.rerun()
+                        normalized_name = cname.strip().lower().replace(" ", "_")
+                        existing_cols = schema[idx].get("columns", [])
+                        if any(c["name"] == normalized_name for c in existing_cols):
+                            st.error(f"Column '{normalized_name}' already exists in this table.")
+                        else:
+                            schema[idx]["columns"].append({
+                                "name": normalized_name,
+                                "description": cdesc.strip() or cname.strip(),
+                                "enabled": True,
+                            })
+                            save_schema(schema)
+                            st.rerun()
 
             st.divider()
 
@@ -236,15 +245,19 @@ with st.sidebar:
             tauto = st.toggle("Auto-detect columns", value=True,
                               help="Allows dynamic mapping of tables without fixed schemas.")
             if st.form_submit_button("+ Add table field", use_container_width=True) and tname.strip():
-                schema.append({
-                    "name": tname.strip().lower().replace(" ", "_"),
-                    "description": tdesc.strip() or tname.strip(),
-                    "field_type": "table", "enabled": True,
-                    "columns_mode": "auto" if tauto else "defined",
-                    "columns": [],
-                })
-                save_schema(schema)
-                st.rerun()
+                normalized_name = tname.strip().lower().replace(" ", "_")
+                if any(f["name"] == normalized_name for f in schema):
+                    st.error(f"Field '{normalized_name}' already exists.")
+                else:
+                    schema.append({
+                        "name": normalized_name,
+                        "description": tdesc.strip() or tname.strip(),
+                        "field_type": "table", "enabled": True,
+                        "columns_mode": "auto" if tauto else "defined",
+                        "columns": [],
+                    })
+                    save_schema(schema)
+                    st.rerun()
 
     c1, c2 = st.columns(2)
     if c1.button("Reset schema", use_container_width=True):

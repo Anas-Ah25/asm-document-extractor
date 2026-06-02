@@ -313,18 +313,33 @@ def infer_schema(parsed: dict, llm_base_url: str, api_key: str, model: str) -> l
     raw = re.sub(r"```(?:json)?\s*|\s*```", "", raw).strip()
     suggested = json.loads(raw)
     result = []
+    seen_fields = set()
     for f in suggested:
+        raw_name = f.get("name", "field")
+        name = raw_name.strip().lower().replace(" ", "_")
+        if not name or name in seen_fields:
+            continue
+        seen_fields.add(name)
         entry: dict = {
-            "name": f.get("name", "field"),
-            "description": f.get("description", ""),
+            "name": name,
+            "description": f.get("description", "") or raw_name,
             "field_type": f.get("field_type", "scalar"),
             "enabled": True,
         }
         if entry["field_type"] == "table":
-            entry["columns"] = [
-                {"name": c.get("name", "col"), "description": c.get("description", ""), "enabled": True}
-                for c in f.get("columns", [])
-            ]
+            seen_cols = set()
+            cols = []
+            for c in f.get("columns", []):
+                raw_cname = c.get("name", "col")
+                cname = raw_cname.strip().lower().replace(" ", "_")
+                if cname and cname not in seen_cols:
+                    seen_cols.add(cname)
+                    cols.append({
+                        "name": cname,
+                        "description": c.get("description", "") or raw_cname,
+                        "enabled": True
+                    })
+            entry["columns"] = cols
         result.append(entry)
     return result
 
