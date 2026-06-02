@@ -33,7 +33,7 @@
     "name": "invoice_date",
     "field_type": "scalar",
     "enabled": true,
-    "description": "Invoice date (labeled Invoicing Data, Date)"
+    "description": "Invoice creation date (labeled Invoice Date, Invoicing Date, or Date). This is NOT the ship date or due date."
   },
   {
     "name": "term",
@@ -81,13 +81,13 @@
     "name": "order_date",
     "field_type": "scalar",
     "enabled": true,
-    "description": "Order date (labeled Ordered)"
+    "description": "Date the order was placed (labeled Order Date, Ordered, Order Placed). This is NOT the invoice date or ship date."
   },
   {
     "name": "ship_date",
     "field_type": "scalar",
     "enabled": true,
-    "description": "Shipping date (labeled Shipping Date, Ship)"
+    "description": "Date the goods were shipped (labeled Ship Date, Shipping Date, Ship, Shipped). This is NOT the invoice date or order date. Return null if not explicitly labeled as a ship date."
   },
   {
     "name": "ship_via",
