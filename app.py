@@ -145,11 +145,7 @@ with st.sidebar:
     )
     parser_key = "pymupdf4llm" if parser_choice == "OCR supported" else "pymupdf"
 
-    backend_choice = st.radio(
-        "Extraction backend",
-        [f"LLM support — {MODEL_NAME}", "Regex (fast, no LLM)"],
-    )
-    use_llm = backend_choice.startswith("LLM")
+    use_llm = True
 
     st.divider()
     st.subheader("Target Schema")
