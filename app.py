@@ -182,6 +182,7 @@ with st.sidebar:
    - `"description"`: Text explanation guiding the extraction model.
 3. **Table fields** must also include:
    - `"columns"`: A JSON array of column objects, where each object has `"name"` and `"description"`.
+4. **Primary key** (optional): Add `"primary_key": true` to a scalar field to include it as a linking column in table CSVs.
 
 ### Example:
 ```json
@@ -189,7 +190,8 @@ with st.sidebar:
   {
     "name": "invoice_no",
     "field_type": "scalar",
-    "description": "Invoice number"
+    "description": "Invoice number",
+    "primary_key": true
   },
   {
     "name": "line_items",
@@ -238,13 +240,17 @@ with st.sidebar:
         with st.expander("Scalar fields", expanded=True):
             for f in [f for f in schema if f["field_type"] == "scalar"]:
                 idx = schema.index(f)
-                c1, c2, c3 = st.columns([1, 5, 1])
+                c1, c2, c3, c4 = st.columns([1, 4, 1, 1])
                 schema[idx]["enabled"] = c1.checkbox(
                     f["name"], value=f["enabled"], key=f"sf_{f['name']}",
                     label_visibility="collapsed",
                 )
                 c2.caption(f"**{f['name']}** — {f['description'][:48]}")
-                if c3.button("✕", key=f"rm_sf_{f['name']}", help="Remove field"):
+                schema[idx]["primary_key"] = c3.checkbox(
+                    "🔑", value=f.get("primary_key", False), key=f"pk_{f['name']}",
+                    help="Include as primary key in table CSVs",
+                )
+                if c4.button("✕", key=f"rm_sf_{f['name']}", help="Remove field"):
                     schema.pop(idx)
                     save_schema(schema)
                     st.rerun()
@@ -579,10 +585,11 @@ with tab_extract:
 
                 for t in table_names:
                     t_rows = _extract_table(data["result"], t)
+                    pk_fields = {f["name"] for f in schema if f.get("primary_key") and f["field_type"] == "scalar" and f["enabled"]}
                     for tr in t_rows:
                         combined_row = {"file": fname}
                         for k, v in scalars.items():
-                            if k not in ["file", "time_s"] and k not in table_names:
+                            if k in pk_fields:
                                 combined_row[k] = v
                         combined_row.update(tr)
                         table_rows_map[t].append(combined_row)
