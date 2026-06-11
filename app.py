@@ -173,11 +173,16 @@ with st.sidebar:
         schema_json = json.dumps(schema, indent=2)
         schema_help = """Edit the schema directly as a JSON list.
 
-To define fields:
-- **Scalar fields:** Set `"field_type": "scalar"` to extract single text or numeric values.
-- **Table fields:** Set `"field_type": "table"` and define the structure by adding a list of `"columns"`.
+### How to construct a valid JSON schema:
+1. **Root element** must be a JSON array of objects: `[ { ... } ]`.
+2. **Every field object** must contain:
+   - `"name"`: Unique string identifier (e.g., `"invoice_date"`). Use snake_case.
+   - `"field_type"`: Must be either `"scalar"` (for single values) or `"table"` (for rows of items).
+   - `"description"`: Text explanation guiding the extraction model.
+3. **Table fields** must also include:
+   - `"columns"`: A JSON array of column objects, where each object has `"name"` and `"description"`.
 
-For example:
+### Example:
 ```json
 [
   {
