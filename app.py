@@ -6,6 +6,7 @@ import re
 import io
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 import pandas as pd
@@ -105,6 +106,16 @@ def _all_names() -> list[str]:
 def _size_kb(name: str) -> int:
     p = POOL_DIR / name
     return p.stat().st_size // 1024 if p.exists() else 0
+
+# Helper to clean legacy wrapped citation values from cache
+def unwrap_citations(data: Any) -> Any:
+    if isinstance(data, dict):
+        if "value" in data and "citation" in data:
+            return unwrap_citations(data["value"])
+        return {k: unwrap_citations(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [unwrap_citations(x) for x in data]
+    return data
 
 # Duplicate header normalization
 def _dedup(headers: list[str]) -> list[str]:
@@ -467,13 +478,13 @@ def _show_result(result: dict, elapsed: float, fname: str) -> None:
     c1, c2 = st.columns([1, 4])
     c1.download_button(
         "Download JSON",
-        data=json.dumps(result, indent=2, default=str),
+        data=json.dumps(unwrap_citations(result), indent=2, default=str),
         file_name=f"{Path(fname).stem}_extracted.json",
         mime="application/json",
         key=f"dl_{fname}_{time.time()}",
     )
     with c2.expander("Raw JSON"):
-        st.json(result, expanded=1)
+        st.json(unwrap_citations(result), expanded=1)
 
 # Streamlit App Main Area
 st.title("Document Extractor")
@@ -605,7 +616,7 @@ with tab_extract:
                 cols_order_t = ["file"] + [c for c in df_t.columns if c != "file"]
                 table_dfs[t] = df_t[cols_order_t]
 
-        batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
+        batch_json_data = {fn: unwrap_citations(d.get("result", {"error": d.get("error")})) for fn, d in st.session_state.results_cache.items()}
 
         with tabs[0]:
             st.dataframe(df_overview[cols_order_overview], use_container_width=True, hide_index=True)
