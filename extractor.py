@@ -115,24 +115,7 @@ def build_pydantic_model(schema: list[dict]) -> type:
                     )
     return create_model("ExtractionSchema", **defs)
 
-# Extraction of span-level elements for citation anchoring
-def _fitz_spans(path: Path) -> list[dict]:
-    elements: list[dict] = []
-    with fitz.open(str(path)) as doc:
-        for page in doc:
-            for block in page.get_text("dict")["blocks"]:
-                if block.get("type") != 0:
-                    continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        t = span.get("text", "").strip()
-                        if t:
-                            elements.append({
-                                "text": t,
-                                "bbox": list(span["bbox"]),
-                                "page": page.number + 1,
-                            })
-    return elements
+# Span extraction removed
 
 # Geometry-based table parsing
 def _plumber_tables(path: Path) -> list[dict]:
@@ -146,7 +129,7 @@ def _plumber_tables(path: Path) -> list[dict]:
 
 # Fast parsing mode
 def parse_pdf_pymupdf(path: Path) -> dict:
-    elements = _fitz_spans(path)
+    elements = []
     tables = _plumber_tables(path)
     
     # Extract line-by-line layout text using fitz
@@ -177,7 +160,7 @@ def parse_pdf_pymupdf4llm(path: Path) -> dict:
     else:
         text_source = markdown
         
-    elements = _fitz_spans(path)
+    elements = []
     tables = _plumber_tables(path)
     return {"text": text_source, "markdown": markdown, "elements": elements,
             "tables": tables, "parser": "pymupdf4llm"}
@@ -210,7 +193,7 @@ def parse_pdf_gemini(path: Path, llm_base_url: str, api_key: str, model: str) ->
             pages_md.append(resp.choices[0].message.content or "")
 
     markdown = "\n\n---\n\n".join(pages_md)
-    elements = _fitz_spans(path)
+    elements = []
     tables = _plumber_tables(path)
     return {"text": markdown, "markdown": markdown, "elements": elements,
             "tables": tables, "parser": f"gemini-vision ({model})"}
@@ -224,10 +207,6 @@ def parse_docx(path: Path) -> dict:
             doc = result.document
             md = doc.export_to_markdown()
             elements = []
-            for item, _ in doc.iterate_items():
-                t = getattr(item, "text", "") or ""
-                if t.strip():
-                    elements.append({"text": t.strip(), "bbox": None, "page": None})
             return {"text": md, "markdown": md, "elements": elements,
                     "tables": [], "parser": "docling"}
         except Exception:
@@ -239,7 +218,6 @@ def parse_docx(path: Path) -> dict:
         for para in doc2.paragraphs:
             t = para.text.strip()
             if t:
-                elements.append({"text": t, "bbox": None, "page": None})
                 lines.append(t)
         return {"text": "\n".join(lines), "markdown": None, "elements": elements,
                 "tables": [], "parser": "python-docx"}
@@ -277,11 +255,11 @@ def parse_image(path: Path, llm_base_url: str, api_key: str, model: str) -> dict
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         tmp.write(pdfbytes); tmp.close()
         tmp_path = Path(tmp.name)
-        elements = _fitz_spans(tmp_path)
         tables = _plumber_tables(tmp_path)
         tmp_path.unlink(missing_ok=True)
     except Exception:
-        elements, tables = [], []
+        tables = []
+    elements = []
     return {"text": markdown, "markdown": markdown, "elements": elements,
             "tables": tables, "parser": f"image-vision ({path.suffix})"}
 
@@ -298,106 +276,6 @@ def parse_document(path: Path, parser: str = "pymupdf4llm",
     if parser == "gemini-vision":
         return parse_pdf_gemini(path, llm_base_url, api_key, model)
     return parse_pdf_pymupdf4llm(path)
-
-# Fuzzy match value in document for spatial coordinates
-def anchor(value: Optional[str], elements: list[dict]) -> Optional[dict]:
-    if not value:
-        return None
-    
-    # 1. Clean the extracted value
-    v = str(value).strip()
-    if not v:
-        return None
-        
-    v_lower = v.lower()
-    
-    # Check if the value looks numeric/monetary
-    is_numeric = re.match(r'^\d+(\.\d+)?$', re.sub(r'[\$,\s\(\)\-]', '', v))
-    
-    def normalize_num(text: str) -> str:
-        # Strip all currency, commas, brackets, dashes, newlines
-        return re.sub(r'[\$,\s\(\)\-\n]', '', text).lower()
-        
-    # Helper to check if a short value matches as a whole token
-    def is_word_match(val: str, target: str) -> bool:
-        # Check boundary matching
-        pattern = rf"\b{re.escape(val)}\b"
-        return bool(re.search(pattern, target, re.IGNORECASE))
-
-    # --- Pass 1: Try exact or normalized numeric/monetary match ---
-    for e in elements:
-        span_text = e.get("text", "").strip()
-        if not span_text:
-            continue
-        span_lower = span_text.lower()
-        
-        # Numeric normalized match
-        if is_numeric:
-            norm_v = normalize_num(v)
-            norm_span = normalize_num(span_text)
-            if norm_v and norm_v in norm_span:
-                # Double check to prevent short digits from matching longer numbers (e.g. "9" matching "90021")
-                if len(norm_v) < 3:
-                    if is_word_match(norm_v, norm_span) or norm_v == norm_span:
-                        return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
-                else:
-                    return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
-        
-        # Substring/Whole-word match
-        if v_lower in span_lower:
-            if len(v_lower) < 3:
-                # Force word boundary check for short strings (like "9")
-                if is_word_match(v_lower, span_lower):
-                    return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
-            else:
-                return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
-
-    # --- Pass 2: Fallback for multi-line/concatenated strings (addresses) ---
-    # Try to match the street address line first (usually lines[1]) as it is more unique,
-    # then fallback to other lines.
-    lines = [line.strip() for line in v.split('\n') if line.strip()]
-    if len(lines) > 1:
-        # Try second line first, then first line, then others
-        search_order = []
-        if len(lines) > 1:
-            search_order.append(lines[1])
-        search_order.append(lines[0])
-        for line in lines[2:]:
-            search_order.append(line)
-            
-        for line in search_order:
-            res = anchor(line, elements)
-            if res:
-                res["source_text"] = f"{v} (Matched: {line})"
-                return res
-
-    # --- Pass 3: Last resort token overlap check for longer strings ---
-    if len(v_lower) > 5:
-        # Check if the span contains most of the words from the start of the value
-        v_words = [w for w in re.split(r'\W+', v_lower) if w]
-        if v_words:
-            first_few = " ".join(v_words[:2])
-            if len(first_few) > 3:
-                for e in elements:
-                    if e.get("text") and first_few in e["text"].lower():
-                        return {"page": e.get("page"), "bbox": e.get("bbox"), "source_text": e["text"]}
-
-    return None
-
-# Attach spatial citations to extraction properties
-def attach_citations(data: Any, elements: list[dict]) -> Any:
-    if isinstance(data, dict):
-        return {
-            k: (
-                {"value": v, "citation": anchor(v, elements)}
-                if isinstance(v, str)
-                else ([attach_citations(i, elements) for i in v] if isinstance(v, list)
-                      else attach_citations(v, elements) if isinstance(v, dict)
-                      else {"value": v, "citation": None})
-            )
-            for k, v in data.items()
-        }
-    return data
 
 _INFER_SYSTEM = """You are a document analyst. Given document text, suggest an extraction schema.
 Return a JSON array of field objects. Each object must have:

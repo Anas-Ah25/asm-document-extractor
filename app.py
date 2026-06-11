@@ -13,7 +13,7 @@ import pandas as pd
 from extractor import (
     parse_document, full_explore,
     extract_schema_regex, extract_schema_ollama,
-    infer_schema, attach_citations,
+    infer_schema,
     DEFAULT_SCHEMA,
 )
 
@@ -400,7 +400,7 @@ def _run_extraction(name: str) -> tuple[dict, float]:
             parsed, st.session_state.schema, LLM_BASE_URL, API_KEY, MODEL_NAME)
     else:
         result, elapsed = extract_schema_regex(parsed, st.session_state.schema)
-    return attach_citations(result, parsed["elements"]), elapsed
+    return result, elapsed
 
 def _extract_scalars(result: dict) -> dict:
     schema = st.session_state.schema
@@ -448,14 +448,9 @@ def _show_result(result: dict, elapsed: float, fname: str) -> None:
         cols = st.columns(3)
         for ci, (field, wrapped) in enumerate(scalars.items()):
             val  = wrapped.get("value", "") if isinstance(wrapped, dict) else wrapped
-            cite = wrapped.get("citation")  if isinstance(wrapped, dict) else None
             with cols[ci % 3]:
                 st.markdown(f"**{field}**")
                 st.code(val or "—", language=None)
-                if cite:
-                    pg  = cite.get("page")
-                    src = cite.get("source_text", "")[:40]
-                    st.caption(f"p.{pg} · {src!r}" if pg else src)
 
     for field in table_names:
         rows_raw = result.get(field, [])
