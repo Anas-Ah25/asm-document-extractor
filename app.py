@@ -374,8 +374,7 @@ def _flatten_result(result: dict) -> dict:
 
 # Render details on extraction completion
 def _show_result(result: dict, elapsed: float, fname: str) -> None:
-    backend = f"Ollama ({MODEL_NAME})" if use_llm else "Regex"
-    st.success(f"**{fname}** — {parser_key} + {backend} — {elapsed:.1f}s")
+    st.success(f"**{fname}** — Success")
 
     schema = st.session_state.schema
     scalar_names = {f["name"] for f in schema if f["field_type"] == "scalar" and f["enabled"]}
@@ -522,13 +521,10 @@ with tab_extract:
         st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
 
         c1, c2 = st.columns(2)
+        batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
         c1.download_button(
             "Download all (JSON)",
-            data=json.dumps(
-                {fn: d.get("result", {"error": d.get("error")})
-                 for fn, d in st.session_state.results_cache.items()},
-                indent=2, default=str,
-            ),
+            data=json.dumps(batch_json_data, indent=2, default=str),
             file_name="batch_extracted.json",
             mime="application/json",
             use_container_width=True,
@@ -541,6 +537,9 @@ with tab_extract:
             mime="text/csv",
             use_container_width=True,
         )
+
+        with st.expander("Preview Batch JSON"):
+            st.json(batch_json_data)
 
         with st.expander("Per-document detail"):
             for fname, data in st.session_state.results_cache.items():
