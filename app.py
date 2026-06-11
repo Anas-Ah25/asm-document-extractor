@@ -48,7 +48,17 @@ def load_schema() -> list[dict]:
             # Auto-migrate: if this is the old engineering schema, discard it
             if any(field.get("name") == _OLD_SCHEMA_MARKER for field in data):
                 SCHEMA_FILE.unlink(missing_ok=True)
-                return copy.deepcopy(DEFAULT_SCHEMA)
+            # Sanitize loaded schema to ensure fields are populated
+            for f in data:
+                if isinstance(f, dict):
+                    f.setdefault("enabled", True)
+                    f.setdefault("description", "")
+                    f.setdefault("field_type", "scalar")
+                    if f.get("field_type") == "table" and "columns" in f:
+                        for col in f["columns"]:
+                            if isinstance(col, dict):
+                                col.setdefault("enabled", True)
+                                col.setdefault("description", "")
             return data
         except Exception as e:
             st.sidebar.error(f"Error loading schema.json: {e}")
@@ -161,12 +171,35 @@ with st.sidebar:
 
     if editor_mode == "JSON Editor":
         schema_json = json.dumps(schema, indent=2)
+        schema_help = (
+            "Edit the schema directly as a JSON list. E.g.\n"
+            "[\n"
+            "  {\n"
+            "    \"name\": \"invoice_no\",\n"
+            "    \"field_type\": \"scalar\",\n"
+            "    \"description\": \"Invoice number\"\n"
+            "  },\n"
+            "  {\n"
+            "    \"name\": \"line_items\",\n"
+            "    \"field_type\": \"table\",\n"
+            "    \"description\": \"Items listed\",\n"
+            "    \"columns\": [\n"
+            "      { \"name\": \"desc\", \"description\": \"Description\" },\n"
+            "      { \"name\": \"qty\", \"description\": \"Quantity\" }\n"
+            "    ]\n"
+            "  }\n"
+            "]"
+        )
         with st.form("json_schema_form"):
             json_input = st.text_area(
                 "Schema JSON",
                 value=schema_json,
                 height=350,
-                help="Edit the schema directly as a JSON list of field definitions.",
+                help=schema_help,
+            )
+            st.caption(
+                "ℹ️ **Tip:** You do not need to specify `\"enabled\": true` in your JSON. "
+                "Any field or column without it will default to `true`."
             )
             submitted = st.form_submit_button("Apply JSON Schema", use_container_width=True)
             if submitted:
@@ -175,6 +208,17 @@ with st.sidebar:
                     if not isinstance(parsed, list):
                         st.error("Schema must be a JSON list of dictionaries.")
                     else:
+                        # Sanitize schema and default omitted 'enabled' flag to True
+                        for f in parsed:
+                            if isinstance(f, dict):
+                                f.setdefault("enabled", True)
+                                f.setdefault("description", "")
+                                f.setdefault("field_type", "scalar")
+                                if f.get("field_type") == "table" and "columns" in f:
+                                    for col in f["columns"]:
+                                        if isinstance(col, dict):
+                                            col.setdefault("enabled", True)
+                                            col.setdefault("description", "")
                         st.session_state.schema = parsed
                         save_schema(parsed)
                         st.success("Schema updated successfully!")
