@@ -348,17 +348,23 @@ def _run_extraction(name: str) -> tuple[dict, float]:
         result, elapsed = extract_schema_regex(parsed, st.session_state.schema)
     return attach_citations(result, parsed["elements"]), elapsed
 
-def _flatten_result(result: dict) -> dict:
+def _extract_scalars(result: dict) -> dict:
     schema = st.session_state.schema
     row = {}
     for f in schema:
         if not f["enabled"]:
             continue
-        name = f["name"]
-        val = result.get(name)
         if f["field_type"] == "scalar":
+            name = f["name"]
+            val = result.get(name)
             row[name] = val.get("value", "") if isinstance(val, dict) else (val or "")
-        elif f["field_type"] == "table":
+    return row
+
+def _extract_table(result: dict, table_name: str) -> list[dict]:
+    schema = st.session_state.schema
+    for f in schema:
+        if f["name"] == table_name and f["field_type"] == "table" and f["enabled"]:
+            val = result.get(table_name)
             raw_rows = val if isinstance(val, list) else []
             cleaned_rows = []
             for r in raw_rows:
@@ -368,9 +374,9 @@ def _flatten_result(result: dict) -> dict:
                         cleaned_row[col_k] = col_v.get("value", "") if isinstance(col_v, dict) else (col_v or "")
                     cleaned_rows.append(cleaned_row)
                 else:
-                    cleaned_rows.append(r)
-            row[name] = json.dumps(cleaned_rows, ensure_ascii=False) if cleaned_rows else ""
-    return row
+                    cleaned_rows.append({"value": str(r)})
+            return cleaned_rows
+    return []
 
 # Render details on extraction completion
 def _show_result(result: dict, elapsed: float, fname: str) -> None:
@@ -505,41 +511,79 @@ with tab_extract:
         st.divider()
         st.subheader("Batch results")
 
-        rows = []
+        schema = st.session_state.schema
+        table_names = [f["name"] for f in schema if f["field_type"] == "table" and f["enabled"]]
+
+        overview_rows = []
+        table_rows_map = {t: [] for t in table_names}
+
         for fname, data in st.session_state.results_cache.items():
             if "error" in data:
-                rows.append({"file": fname, "error": data["error"]})
+                overview_rows.append({"file": fname, "error": data["error"]})
             else:
-                r = _flatten_result(data["result"])
-                r["file"] = fname
-                r["time_s"] = f"{data['elapsed']:.1f}s"
-                rows.append(r)
+                scalars = _extract_scalars(data["result"])
+                scalars["file"] = fname
+                scalars["time_s"] = f"{data['elapsed']:.1f}s"
+                overview_rows.append(scalars)
 
-        df = pd.DataFrame(rows)
-        df.columns = _dedup(list(df.columns))
-        cols_order = ["file"] + [c for c in df.columns if c != "file"]
-        st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
+                for t in table_names:
+                    t_rows = _extract_table(data["result"], t)
+                    for tr in t_rows:
+                        combined_row = {"file": fname}
+                        for k, v in scalars.items():
+                            if k not in ["file", "time_s"]:
+                                combined_row[k] = v
+                        combined_row.update(tr)
+                        table_rows_map[t].append(combined_row)
 
-        c1, c2 = st.columns(2)
-        batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
-        c1.download_button(
-            "Download all (JSON)",
-            data=json.dumps(batch_json_data, indent=2, default=str),
-            file_name="batch_extracted.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-        csv_data = df[cols_order].to_csv(index=False)
-        c2.download_button(
-            "Download all (CSV)",
-            data=csv_data,
-            file_name="batch_extracted.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+        df_overview = pd.DataFrame(overview_rows)
+        df_overview.columns = _dedup(list(df_overview.columns))
+        cols_order_overview = ["file"] + [c for c in df_overview.columns if c != "file"]
+        
+        tab_titles = ["Overview"] + table_names
+        tabs = st.tabs(tab_titles)
 
-        with st.expander("Preview Batch JSON"):
-            st.json(batch_json_data)
+        with tabs[0]:
+            st.dataframe(df_overview[cols_order_overview], use_container_width=True, hide_index=True)
+
+            c1, c2 = st.columns(2)
+            batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
+            c1.download_button(
+                "Download all (JSON)",
+                data=json.dumps(batch_json_data, indent=2, default=str),
+                file_name="batch_extracted.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+            csv_data_overview = df_overview[cols_order_overview].to_csv(index=False)
+            c2.download_button(
+                "Download Overview (CSV)",
+                data=csv_data_overview,
+                file_name="batch_overview.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+            with st.expander("Preview Batch JSON"):
+                st.json(batch_json_data)
+
+        for i, t in enumerate(table_names):
+            with tabs[i+1]:
+                if table_rows_map[t]:
+                    df_t = pd.DataFrame(table_rows_map[t])
+                    df_t.columns = _dedup(list(df_t.columns))
+                    cols_order_t = ["file"] + [c for c in df_t.columns if c != "file"]
+                    st.dataframe(df_t[cols_order_t], use_container_width=True, hide_index=True)
+                    
+                    st.download_button(
+                        f"Download {t} (CSV)",
+                        data=df_t[cols_order_t].to_csv(index=False),
+                        file_name=f"batch_{t.replace(' ', '_')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(f"No rows found for table '{t}' across all documents.")
 
         with st.expander("Per-document detail"):
             for fname, data in st.session_state.results_cache.items():
