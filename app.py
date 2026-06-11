@@ -171,7 +171,13 @@ with st.sidebar:
 
     if editor_mode == "JSON Editor":
         schema_json = json.dumps(schema, indent=2)
-        schema_help = """Edit the schema directly as a JSON list. E.g.
+        schema_help = """Edit the schema directly as a JSON list.
+
+To define fields:
+- **Scalar fields:** Set `"field_type": "scalar"` to extract single text or numeric values.
+- **Table fields:** Set `"field_type": "table"` and define the structure by adding a list of `"columns"`.
+
+For example:
 ```json
 [
   {
