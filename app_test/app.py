@@ -17,7 +17,6 @@ from extractor import (
 )
 
 POOL_DIR = Path(__file__).parent
-SCHEMA_FILE = POOL_DIR / "schema.json"
 SUPPORTED = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
 # Connection credentials
@@ -36,31 +35,6 @@ div[data-testid="stFileUploaderDropzone"] { padding: 0.6rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# Names that identify the OLD engineering schema — if found, auto-migrate
-_OLD_SCHEMA_MARKER = "document_number"
-
-# Schema persistence helpers
-def load_schema() -> list[dict]:
-    if SCHEMA_FILE.exists():
-        try:
-            with open(SCHEMA_FILE, "r") as f:
-                data = json.load(f)
-            # Auto-migrate: if this is the old engineering schema, discard it
-            if any(field.get("name") == _OLD_SCHEMA_MARKER for field in data):
-                SCHEMA_FILE.unlink(missing_ok=True)
-                return copy.deepcopy(DEFAULT_SCHEMA)
-            return data
-        except Exception as e:
-            st.sidebar.error(f"Error loading schema.json: {e}")
-    return copy.deepcopy(DEFAULT_SCHEMA)
-
-def save_schema(schema_data: list[dict]) -> None:
-    try:
-        with open(SCHEMA_FILE, "w") as f:
-            json.dump(schema_data, f, indent=2)
-    except Exception as e:
-        st.sidebar.error(f"Error saving schema: {e}")
-
 # Session States
 _defaults = {
     "schema": None,
@@ -71,14 +45,9 @@ _defaults = {
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
-        st.session_state[k] = load_schema() if k == "schema" else v
+        st.session_state[k] = copy.deepcopy(DEFAULT_SCHEMA) if k == "schema" else v
 
-# Auto-migrate stale session: if session has old engineering schema, replace it
-if any(f.get("name") == _OLD_SCHEMA_MARKER for f in (st.session_state.schema or [])):
-    st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
-    save_schema(st.session_state.schema)
-
-RESERVED_STEMS = {"app", "extractor", "clean_app"}
+RESERVED_STEMS = {"app", "extractor"}
 
 # File listing helper
 def _disk_files() -> list[Path]:
@@ -180,7 +149,6 @@ with st.sidebar:
                         st.error("Schema must be a JSON list of dictionaries.")
                     else:
                         st.session_state.schema = parsed
-                        save_schema(parsed)
                         st.success("Schema updated successfully!")
                         st.rerun()
                 except json.JSONDecodeError as e:
@@ -190,48 +158,35 @@ with st.sidebar:
         with st.expander("Scalar fields", expanded=True):
             for f in [f for f in schema if f["field_type"] == "scalar"]:
                 idx = schema.index(f)
-                c1, c2, c3 = st.columns([1, 5, 1])
+                c1, c2 = st.columns([1, 5])
                 schema[idx]["enabled"] = c1.checkbox(
                     f["name"], value=f["enabled"], key=f"sf_{f['name']}",
                     label_visibility="collapsed",
                 )
                 c2.caption(f"**{f['name']}** — {f['description'][:48]}")
-                if c3.button("✕", key=f"rm_sf_{f['name']}", help="Remove field"):
-                    schema.pop(idx)
-                    save_schema(schema)
-                    st.rerun()
 
             with st.form("add_scalar", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 sname = c1.text_input("Name", placeholder="po_number")
                 sdesc = c2.text_input("Description", placeholder="Purchase order #")
                 if st.form_submit_button("+ Add field", use_container_width=True) and sname.strip():
-                    normalized_name = sname.strip().lower().replace(" ", "_")
-                    if any(f["name"] == normalized_name for f in schema):
-                        st.error(f"Field '{normalized_name}' already exists.")
-                    else:
-                        schema.append({
-                            "name": normalized_name,
-                            "description": sdesc.strip() or sname.strip(),
-                            "field_type": "scalar", "enabled": True,
-                        })
-                        save_schema(schema)
-                        st.rerun()
+                    schema.append({
+                        "name": sname.strip().lower().replace(" ", "_"),
+                        "description": sdesc.strip() or sname.strip(),
+                        "field_type": "scalar", "enabled": True,
+                    })
+                    st.rerun()
 
         # Table configurations UI
         with st.expander("Table fields", expanded=True):
             for f in [f for f in schema if f["field_type"] == "table"]:
                 idx = schema.index(f)
-                c1, c2, c3 = st.columns([1, 5, 1])
+                c1, c2 = st.columns([1, 5])
                 schema[idx]["enabled"] = c1.checkbox(
                     f["name"], value=f["enabled"], key=f"tf_{f['name']}",
                     label_visibility="collapsed",
                 )
                 c2.caption(f"**{f['name']}** — {f['description'][:38]}")
-                if c3.button("✕", key=f"rm_tf_{f['name']}", help="Remove table field"):
-                    schema.pop(idx)
-                    save_schema(schema)
-                    st.rerun()
 
                 if not f["enabled"]:
                     continue
@@ -259,7 +214,6 @@ with st.sidebar:
                         cc2.caption(f"`{col['name']}` — {col['description'][:32]}")
                         if cc3.button("✕", key=f"rm_col_{f['name']}_{ci}", help="Remove column"):
                             schema[idx]["columns"].pop(ci)
-                            save_schema(schema)
                             st.rerun()
 
                     with st.form(f"add_col_{f['name']}", clear_on_submit=True):
@@ -267,18 +221,12 @@ with st.sidebar:
                         cname = ac1.text_input("Column name", placeholder="item_number", key=f"cn_{f['name']}")
                         cdesc = ac2.text_input("Description",  placeholder="Item #",      key=f"cd_{f['name']}")
                         if st.form_submit_button("+ Add column", use_container_width=True) and cname.strip():
-                            normalized_name = cname.strip().lower().replace(" ", "_")
-                            existing_cols = schema[idx].get("columns", [])
-                            if any(c["name"] == normalized_name for c in existing_cols):
-                                st.error(f"Column '{normalized_name}' already exists in this table.")
-                            else:
-                                schema[idx]["columns"].append({
-                                    "name": normalized_name,
-                                    "description": cdesc.strip() or cname.strip(),
-                                    "enabled": True,
-                                })
-                                save_schema(schema)
-                                st.rerun()
+                            schema[idx]["columns"].append({
+                                "name": cname.strip().lower().replace(" ", "_"),
+                                "description": cdesc.strip() or cname.strip(),
+                                "enabled": True,
+                            })
+                            st.rerun()
 
                 st.divider()
 
@@ -288,24 +236,18 @@ with st.sidebar:
                 tauto = st.toggle("Auto-detect columns", value=True,
                                   help="Allows dynamic mapping of tables without fixed schemas.")
                 if st.form_submit_button("+ Add table field", use_container_width=True) and tname.strip():
-                    normalized_name = tname.strip().lower().replace(" ", "_")
-                    if any(f["name"] == normalized_name for f in schema):
-                        st.error(f"Field '{normalized_name}' already exists.")
-                    else:
-                        schema.append({
-                            "name": normalized_name,
-                            "description": tdesc.strip() or tname.strip(),
-                            "field_type": "table", "enabled": True,
-                            "columns_mode": "auto" if tauto else "defined",
-                            "columns": [],
-                        })
-                        save_schema(schema)
-                        st.rerun()
+                    schema.append({
+                        "name": tname.strip().lower().replace(" ", "_"),
+                        "description": tdesc.strip() or tname.strip(),
+                        "field_type": "table", "enabled": True,
+                        "columns_mode": "auto" if tauto else "defined",
+                        "columns": [],
+                    })
+                    st.rerun()
 
         c1, c2 = st.columns(2)
         if c1.button("Reset schema", use_container_width=True):
             st.session_state.schema = copy.deepcopy(DEFAULT_SCHEMA)
-            save_schema(st.session_state.schema)
             st.rerun()
         if c2.button("Infer schema", use_container_width=True,
                      help="Let the LLM suggest a schema from a sample document"):
@@ -324,15 +266,11 @@ with st.sidebar:
                             suggested = infer_schema(parsed, LLM_BASE_URL, API_KEY, MODEL_NAME)
                         if suggested:
                             st.session_state.schema = suggested
-                            save_schema(suggested)
                             st.session_state._infer_pending = False
                             st.rerun()
             else:
                 st.caption("Upload a file first.")
                 st.session_state._infer_pending = False
-
-    # Auto-save schema at the end of sidebar configuration block
-    save_schema(schema)
 
 # Run extraction logic helper
 def _run_extraction(name: str) -> tuple[dict, float]:
