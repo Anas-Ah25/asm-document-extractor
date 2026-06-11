@@ -4,6 +4,7 @@ import copy
 import time
 import re
 import io
+import zipfile
 from pathlib import Path
 
 import streamlit as st
@@ -593,11 +594,21 @@ with tab_extract:
         tab_titles = ["Overview"] + table_names
         tabs = st.tabs(tab_titles)
 
+        # Pre-build table DataFrames for reuse across tabs and ZIP
+        table_dfs = {}
+        for t in table_names:
+            if table_rows_map[t]:
+                df_t = pd.DataFrame(table_rows_map[t])
+                df_t.columns = _dedup(list(df_t.columns))
+                cols_order_t = ["file"] + [c for c in df_t.columns if c != "file"]
+                table_dfs[t] = df_t[cols_order_t]
+
+        batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
+
         with tabs[0]:
             st.dataframe(df_overview[cols_order_overview], use_container_width=True, hide_index=True)
 
-            c1, c2 = st.columns(2)
-            batch_json_data = {fn: d.get("result", {"error": d.get("error")}) for fn, d in st.session_state.results_cache.items()}
+            c1, c2, c3 = st.columns(3)
             c1.download_button(
                 "Download all (JSON)",
                 data=json.dumps(batch_json_data, indent=2, default=str),
@@ -605,12 +616,28 @@ with tab_extract:
                 mime="application/json",
                 use_container_width=True,
             )
-            csv_data_overview = df_overview[cols_order_overview].to_csv(index=False)
             c2.download_button(
                 "Download Overview (CSV)",
-                data=csv_data_overview,
+                data=df_overview[cols_order_overview].to_csv(index=False),
                 file_name="batch_overview.csv",
                 mime="text/csv",
+                use_container_width=True,
+            )
+
+            # Build ZIP: overview.csv + batch.json + one CSV per table
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("overview.csv", df_overview[cols_order_overview].to_csv(index=False))
+                zf.writestr("batch_extracted.json", json.dumps(batch_json_data, indent=2, default=str))
+                for t_name, t_df in table_dfs.items():
+                    zf.writestr(f"tables/{t_name.replace(' ', '_')}.csv", t_df.to_csv(index=False))
+            zip_buf.seek(0)
+
+            c3.download_button(
+                "Download all (ZIP)",
+                data=zip_buf.getvalue(),
+                file_name="batch_extraction.zip",
+                mime="application/zip",
                 use_container_width=True,
             )
 
@@ -619,15 +646,11 @@ with tab_extract:
 
         for i, t in enumerate(table_names):
             with tabs[i+1]:
-                if table_rows_map[t]:
-                    df_t = pd.DataFrame(table_rows_map[t])
-                    df_t.columns = _dedup(list(df_t.columns))
-                    cols_order_t = ["file"] + [c for c in df_t.columns if c != "file"]
-                    st.dataframe(df_t[cols_order_t], use_container_width=True, hide_index=True)
-                    
+                if t in table_dfs:
+                    st.dataframe(table_dfs[t], use_container_width=True, hide_index=True)
                     st.download_button(
                         f"Download {t} (CSV)",
-                        data=df_t[cols_order_t].to_csv(index=False),
+                        data=table_dfs[t].to_csv(index=False),
                         file_name=f"batch_{t.replace(' ', '_')}.csv",
                         mime="text/csv",
                         use_container_width=True,
