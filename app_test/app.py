@@ -286,11 +286,29 @@ def _run_extraction(name: str) -> tuple[dict, float]:
         result, elapsed = extract_schema_regex(parsed, st.session_state.schema)
     return attach_citations(result, parsed["elements"]), elapsed
 
-def _flatten_scalar(result: dict) -> dict:
-    scalar_names = {f["name"] for f in st.session_state.schema
-                    if f["field_type"] == "scalar" and f["enabled"]}
-    return {k: (v.get("value", "") if isinstance(v, dict) else v)
-            for k, v in result.items() if k in scalar_names}
+def _flatten_result(result: dict) -> dict:
+    schema = st.session_state.schema
+    row = {}
+    for f in schema:
+        if not f["enabled"]:
+            continue
+        name = f["name"]
+        val = result.get(name)
+        if f["field_type"] == "scalar":
+            row[name] = val.get("value", "") if isinstance(val, dict) else (val or "")
+        elif f["field_type"] == "table":
+            raw_rows = val if isinstance(val, list) else []
+            cleaned_rows = []
+            for r in raw_rows:
+                if isinstance(r, dict):
+                    cleaned_row = {}
+                    for col_k, col_v in r.items():
+                        cleaned_row[col_k] = col_v.get("value", "") if isinstance(col_v, dict) else (col_v or "")
+                    cleaned_rows.append(cleaned_row)
+                else:
+                    cleaned_rows.append(r)
+            row[name] = json.dumps(cleaned_rows, ensure_ascii=False) if cleaned_rows else ""
+    return row
 
 # Render details on extraction completion
 def _show_result(result: dict, elapsed: float, fname: str) -> None:
@@ -431,7 +449,7 @@ with tab_extract:
             if "error" in data:
                 rows.append({"file": fname, "error": data["error"]})
             else:
-                r = _flatten_scalar(data["result"])
+                r = _flatten_result(data["result"])
                 r["file"] = fname
                 r["time_s"] = f"{data['elapsed']:.1f}s"
                 rows.append(r)
@@ -441,7 +459,8 @@ with tab_extract:
         cols_order = ["file"] + [c for c in df.columns if c != "file"]
         st.dataframe(df[cols_order], use_container_width=True, hide_index=True)
 
-        st.download_button(
+        c1, c2 = st.columns(2)
+        c1.download_button(
             "Download all (JSON)",
             data=json.dumps(
                 {fn: d.get("result", {"error": d.get("error")})
@@ -450,6 +469,15 @@ with tab_extract:
             ),
             file_name="batch_extracted.json",
             mime="application/json",
+            use_container_width=True,
+        )
+        csv_data = df[cols_order].to_csv(index=False)
+        c2.download_button(
+            "Download all (CSV)",
+            data=csv_data,
+            file_name="batch_extracted.csv",
+            mime="text/csv",
+            use_container_width=True,
         )
 
         with st.expander("Per-document detail"):
