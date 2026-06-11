@@ -171,35 +171,31 @@ with st.sidebar:
 
     if editor_mode == "JSON Editor":
         schema_json = json.dumps(schema, indent=2)
-        schema_help = (
-            "Edit the schema directly as a JSON list. E.g.\n"
-            "[\n"
-            "  {\n"
-            "    \"name\": \"invoice_no\",\n"
-            "    \"field_type\": \"scalar\",\n"
-            "    \"description\": \"Invoice number\"\n"
-            "  },\n"
-            "  {\n"
-            "    \"name\": \"line_items\",\n"
-            "    \"field_type\": \"table\",\n"
-            "    \"description\": \"Items listed\",\n"
-            "    \"columns\": [\n"
-            "      { \"name\": \"desc\", \"description\": \"Description\" },\n"
-            "      { \"name\": \"qty\", \"description\": \"Quantity\" }\n"
-            "    ]\n"
-            "  }\n"
-            "]"
-        )
+        schema_help = """Edit the schema directly as a JSON list. E.g.
+```json
+[
+  {
+    "name": "invoice_no",
+    "field_type": "scalar",
+    "description": "Invoice number"
+  },
+  {
+    "name": "line_items",
+    "field_type": "table",
+    "description": "Items listed",
+    "columns": [
+      { "name": "desc", "description": "Description" },
+      { "name": "qty", "description": "Quantity" }
+    ]
+  }
+]
+```"""
         with st.form("json_schema_form"):
             json_input = st.text_area(
                 "Schema JSON",
                 value=schema_json,
                 height=350,
                 help=schema_help,
-            )
-            st.caption(
-                "ℹ️ **Tip:** You do not need to specify `\"enabled\": true` in your JSON. "
-                "Any field or column without it will default to `true`."
             )
             submitted = st.form_submit_button("Apply JSON Schema", use_container_width=True)
             if submitted:
