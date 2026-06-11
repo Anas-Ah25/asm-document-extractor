@@ -401,10 +401,13 @@ def _extract_scalars(result: dict) -> dict:
     for f in schema:
         if not f["enabled"]:
             continue
+        name = f["name"]
+        val = result.get(name)
         if f["field_type"] == "scalar":
-            name = f["name"]
-            val = result.get(name)
             row[name] = val.get("value", "") if isinstance(val, dict) else (val or "")
+        elif f["field_type"] == "table":
+            t_rows = _extract_table(result, name)
+            row[name] = json.dumps(t_rows, ensure_ascii=False) if t_rows else ""
     return row
 
 def _extract_table(result: dict, table_name: str) -> list[dict]:
@@ -578,7 +581,7 @@ with tab_extract:
                     for tr in t_rows:
                         combined_row = {"file": fname}
                         for k, v in scalars.items():
-                            if k not in ["file", "time_s"]:
+                            if k not in ["file", "time_s"] and k not in table_names:
                                 combined_row[k] = v
                         combined_row.update(tr)
                         table_rows_map[t].append(combined_row)
